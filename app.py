@@ -27,11 +27,21 @@ def hoje_brasil():
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Agenda Psicologia - Psi. Radamés", 
+    page_title="Agenda Psicologia - Dr. Radamés", 
     page_icon="🧠", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Configurar localização para pt-BR
+import locale
+try:
+    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
+except:
+    try:
+        locale.setlocale(locale.LC_TIME, 'Portuguese_Brazil.1252')
+    except:
+        pass  # Usa padrão do sistema
 
 # CSS Customizado - Tema Profissional Psicologia
 st.markdown("""
@@ -278,6 +288,28 @@ def validar_cpf_basico(cpf):
         return "", None
     else:
         return limpo, f"⚠️ CPF com formato inválido ({len(limpo)} dígitos)"
+
+def formatar_data_br(data):
+    """Formata data para padrão brasileiro dd/mm/aaaa."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        try:
+            data = pd.to_datetime(data).date()
+        except:
+            return data
+    if isinstance(data, datetime):
+        data = data.date()
+    return data.strftime('%d/%m/%Y')
+
+def parse_data_br(data_str):
+    """Parse data do formato brasileiro dd/mm/aaaa."""
+    if not data_str:
+        return None
+    try:
+        return datetime.strptime(data_str, '%d/%m/%Y').date()
+    except:
+        return None
 
 # ==============================================================================
 # FUNÇÕES DE CÁLCULO
@@ -608,7 +640,7 @@ if 'pacotes' not in st.session_state:
 # ==============================================================================
 with st.sidebar:
     st.markdown("### 🧠 Agenda Psicologia")
-    st.markdown(f"**Psi. Radamés**")
+    st.markdown(f"**Dr. Radamés**")
     st.markdown(f"CRP 19/5223")
     st.divider()
     
@@ -635,13 +667,15 @@ if menu == "📊 Dashboard":
         data_inicio = st.date_input(
             "Data Início", 
             value=hoje_brasil() - timedelta(days=30),
-            max_value=hoje_brasil()
+            max_value=hoje_brasil(),
+            format="DD/MM/YYYY"
         )
     with col2:
         data_fim = st.date_input(
             "Data Fim",
             value=hoje_brasil(),
-            max_value=hoje_brasil() + timedelta(days=365)
+            max_value=hoje_brasil() + timedelta(days=365),
+            format="DD/MM/YYYY"
         )
     
     # Filtrar agendamentos
@@ -737,7 +771,8 @@ elif menu == "📅 Agendamentos":
                         "📅 Data *",
                         value=hoje_brasil(),
                         min_value=hoje_brasil() - timedelta(days=7),
-                        max_value=hoje_brasil() + timedelta(days=365)
+                        max_value=hoje_brasil() + timedelta(days=365),
+                        format="DD/MM/YYYY"
                     )
                     
                     servico = st.selectbox(
@@ -1064,7 +1099,8 @@ elif menu == "📅 Agendamentos":
                     with col2:
                         nova_data = st.date_input(
                             "Data",
-                            value=ag['Data']
+                            value=ag['Data'],
+                            format="DD/MM/YYYY"
                         )
                         
                         nova_hora = st.time_input(
@@ -1139,7 +1175,8 @@ elif menu == "👤 Pacientes":
                 data_nasc = st.date_input(
                     "📅 Data de Nascimento",
                     value=None,
-                    max_value=hoje_brasil()
+                    max_value=hoje_brasil(),
+                    format="DD/MM/YYYY"
                 )
             
             with col2:
@@ -1294,7 +1331,8 @@ elif menu == "👤 Pacientes":
                     nova_data_nasc = st.date_input(
                         "Data de Nascimento",
                         value=data_nasc_atual,
-                        max_value=hoje_brasil()
+                        max_value=hoje_brasil(),
+                        format="DD/MM/YYYY"
                     )
                 
                 with col2:
@@ -1393,7 +1431,8 @@ elif menu == "📦 Pacotes":
                     data_compra = st.date_input(
                         "📅 Data da Compra *",
                         value=hoje_brasil(),
-                        max_value=hoje_brasil()
+                        max_value=hoje_brasil(),
+                        format="DD/MM/YYYY"
                     )
                     
                     # Calcular validade (1 mês)
@@ -1598,7 +1637,7 @@ Este é um lembrete da sua consulta:
 ⏰ Horário: {consulta['Hora'].strftime('%H:%M')}
 💼 Serviço: {consulta['Servico']}
 
-📍 Local: Consultório Psi. Radamés
+📍 Local: Consultório Dr. Radamés
 
 Por favor, confirme sua presença ou avise caso precise remarcar.
 
@@ -1668,12 +1707,14 @@ elif menu == "📈 Relatórios":
     with col1:
         data_inicio_rel = st.date_input(
             "Data Início",
-            value=hoje_brasil().replace(day=1)  # Primeiro dia do mês
+            value=hoje_brasil().replace(day=1),  # Primeiro dia do mês
+            format="DD/MM/YYYY"
         )
     with col2:
         data_fim_rel = st.date_input(
             "Data Fim",
-            value=hoje_brasil()
+            value=hoje_brasil(),
+            format="DD/MM/YYYY"
         )
     
     # Filtrar dados
@@ -1869,4 +1910,3 @@ elif menu == "🛠️ Manutenção":
             st.session_state.pacotes = carregar_pacotes()
             st.success("✅ Dados recarregados!")
             st.rerun()
-
