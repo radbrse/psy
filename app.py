@@ -1458,12 +1458,17 @@ elif menu == "👤 Pacientes":
                 nome = st.text_input("👤 Nome Completo *", placeholder="Ex: João da Silva")
                 cpf = st.text_input("🆔 CPF", placeholder="000.000.000-00")
                 email = st.text_input("📧 Email", placeholder="exemplo@email.com")
-                data_nasc = st.date_input(
-                    "📅 Data de Nascimento",
-                    value=None,
-                    max_value=hoje_brasil(),
-                    format="DD/MM/YYYY"
-                )
+                
+                # Checkbox para informar data de nascimento
+                informar_data = st.checkbox("📅 Informar Data de Nascimento", value=False)
+                if informar_data:
+                    data_nasc = st.date_input(
+                        "Data de Nascimento",
+                        max_value=hoje_brasil(),
+                        format="DD/MM/YYYY"
+                    )
+                else:
+                    data_nasc = None
             
             with col2:
                 telefone = st.text_input("📱 Telefone *", placeholder="(79) 99999-9999")
@@ -1621,20 +1626,32 @@ elif menu == "👤 Pacientes":
                         except:
                             data_nasc_atual = None
                     
-                    if data_nasc_atual:
-                        nova_data_nasc = st.date_input(
-                            "Data de Nascimento",
-                            value=data_nasc_atual,
-                            max_value=hoje_brasil(),
-                            format="DD/MM/YYYY"
-                        )
+                    # Checkbox para alterar/informar data de nascimento
+                    tem_data = data_nasc_atual is not None
+                    alterar_data = st.checkbox(
+                        "📅 Data de Nascimento", 
+                        value=tem_data,
+                        help="Marque para informar ou alterar a data de nascimento"
+                    )
+                    
+                    if alterar_data:
+                        if data_nasc_atual:
+                            nova_data_nasc = st.date_input(
+                                "Selecione a data",
+                                value=data_nasc_atual,
+                                max_value=hoje_brasil(),
+                                format="DD/MM/YYYY",
+                                label_visibility="collapsed"
+                            )
+                        else:
+                            nova_data_nasc = st.date_input(
+                                "Selecione a data",
+                                max_value=hoje_brasil(),
+                                format="DD/MM/YYYY",
+                                label_visibility="collapsed"
+                            )
                     else:
-                        nova_data_nasc = st.date_input(
-                            "Data de Nascimento",
-                            value=None,
-                            max_value=hoje_brasil(),
-                            format="DD/MM/YYYY"
-                        )
+                        nova_data_nasc = None
                 
                 with col2:
                     novo_telefone = st.text_input("Telefone", value=paciente['Telefone'])
