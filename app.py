@@ -882,7 +882,7 @@ if menu == "📊 Dashboard":
 elif menu == "📅 Agendamentos":
     st.title("📅 Gestão de Agendamentos")
     
-    tab1, tab2, tab3 = st.tabs(["➕ Novo Agendamento", "📋 Lista", "🔍 Buscar"])
+    tab1, tab2, tab3 = st.tabs(["➕ Novo Agendamento", "📋 Lista", "✏️ Buscar/Editar/Excluir"])
     
     # --- TAB 1: NOVO AGENDAMENTO ---
     with tab1:
@@ -1368,7 +1368,7 @@ elif menu == "📅 Agendamentos":
 elif menu == "👤 Pacientes":
     st.title("👤 Gestão de Pacientes")
     
-    tab1, tab2, tab3 = st.tabs(["➕ Cadastrar", "📋 Lista", "🔍 Buscar"])
+    tab1, tab2, tab3 = st.tabs(["➕ Cadastrar", "📋 Lista", "✏️ Editar/Excluir"])
     
     # --- TAB 1: CADASTRAR ---
     with tab1:
@@ -1596,7 +1596,7 @@ elif menu == "👤 Pacientes":
 elif menu == "📦 Pacotes":
     st.title("📦 Gestão de Pacotes")
     
-    tab1, tab2 = st.tabs(["➕ Novo Pacote", "📋 Lista"])
+    tab1, tab2, tab3 = st.tabs(["➕ Novo Pacote", "📋 Lista", "✏️ Editar/Excluir"])
     
     # --- TAB 1: NOVO PACOTE ---
     with tab1:
@@ -1789,6 +1789,133 @@ elif menu == "📦 Pacotes":
             with col3:
                 receita_pacotes = df_pacotes_show['Valor'].sum()
                 st.metric("💰 Receita Total", f"R$ {receita_pacotes:,.2f}")
+    
+    # --- TAB 3: EDITAR/EXCLUIR ---
+    with tab3:
+        st.subheader("Editar ou Excluir Pacote")
+        
+        if st.session_state.pacotes.empty:
+            st.info("Nenhum pacote cadastrado.")
+        else:
+            # Selecionar pacote
+            pacotes_list = st.session_state.pacotes.apply(
+                lambda x: f"ID {int(x['ID'])} - {x['Paciente']} - {x['Status']}", axis=1
+            ).tolist()
+            
+            pacote_selecionado = st.selectbox(
+                "Selecione o pacote:",
+                options=pacotes_list
+            )
+            
+            # Extrair ID
+            id_pacote = int(pacote_selecionado.split(" - ")[0].replace("ID ", ""))
+            
+            pacote = st.session_state.pacotes[
+                st.session_state.pacotes['ID'] == id_pacote
+            ].iloc[0]
+            
+            # Mostrar informações atuais
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**ID:** {int(pacote['ID'])}")
+                st.write(f"**Paciente:** {pacote['Paciente']}")
+                st.write(f"**Quantidade:** {int(pacote['QtdSessoes'])} sessões")
+                st.write(f"**Valor:** R$ {pacote['Valor']:.2f}")
+            
+            with col2:
+                st.write(f"**Data Compra:** {pd.to_datetime(pacote['DataCompra']).strftime('%d/%m/%Y')}")
+                st.write(f"**Validade:** {pd.to_datetime(pacote['Validade']).strftime('%d/%m/%Y')}")
+                st.write(f"**Status:** {pacote['Status']}")
+                
+                # Calcular sessões utilizadas
+                info = calcular_sessoes_restantes(
+                    pacote['Paciente'],
+                    st.session_state.agendamentos,
+                    st.session_state.pacotes
+                )
+                if info:
+                    utilizadas = int(pacote['QtdSessoes']) - info['restantes']
+                    st.write(f"**Sessões Utilizadas:** {utilizadas}/{int(pacote['QtdSessoes'])}")
+            
+            st.divider()
+            
+            # Formulário de edição
+            with st.form("form_editar_pacote"):
+                st.subheader("Editar Pacote")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    novo_status_pacote = st.selectbox(
+                        "Status",
+                        options=["ATIVO", "VENCIDO", "CANCELADO"],
+                        index=["ATIVO", "VENCIDO", "CANCELADO"].index(pacote['Status'])
+                    )
+                    
+                    nova_qtd_sessoes = st.number_input(
+                        "Quantidade de Sessões",
+                        min_value=1,
+                        max_value=50,
+                        value=int(pacote['QtdSessoes']),
+                        step=1
+                    )
+                
+                with col2:
+                    novo_valor_pacote = st.number_input(
+                        "Valor do Pacote",
+                        min_value=0.01,
+                        max_value=10000.0,
+                        value=float(pacote['Valor']),
+                        step=10.0,
+                        format="%.2f"
+                    )
+                    
+                    nova_validade = st.date_input(
+                        "Validade",
+                        value=pd.to_datetime(pacote['Validade']).date(),
+                        format="DD/MM/YYYY"
+                    )
+                
+                col_submit = st.columns([1, 1, 1])
+                
+                with col_submit[0]:
+                    if st.form_submit_button("💾 Salvar Alterações", use_container_width=True, type="primary"):
+                        idx = st.session_state.pacotes[
+                            st.session_state.pacotes['ID'] == id_pacote
+                        ].index[0]
+                        
+                        st.session_state.pacotes.at[idx, 'Status'] = novo_status_pacote
+                        st.session_state.pacotes.at[idx, 'QtdSessoes'] = nova_qtd_sessoes
+                        st.session_state.pacotes.at[idx, 'Valor'] = round(novo_valor_pacote, 2)
+                        st.session_state.pacotes.at[idx, 'Validade'] = nova_validade
+                        
+                        salvar_pacotes(st.session_state.pacotes)
+                        registrar_historico("PACOTE_EDITADO", f"ID {id_pacote} - {pacote['Paciente']}")
+                        
+                        st.success("✅ Pacote atualizado!")
+                        st.rerun()
+                
+                with col_submit[2]:
+                    if st.form_submit_button("🗑️ Excluir Pacote", use_container_width=True):
+                        # Verificar se tem sessões vinculadas
+                        sessoes_pacote = st.session_state.agendamentos[
+                            (st.session_state.agendamentos['Paciente'] == pacote['Paciente']) &
+                            (st.session_state.agendamentos['Pagamento'] == 'PACOTE')
+                        ]
+                        
+                        if not sessoes_pacote.empty:
+                            st.warning(f"⚠️ Este pacote tem {len(sessoes_pacote)} sessão(ões) vinculada(s).")
+                            st.info("💡 Dica: Altere o pagamento das sessões antes de excluir o pacote.")
+                        else:
+                            st.session_state.pacotes = st.session_state.pacotes[
+                                st.session_state.pacotes['ID'] != id_pacote
+                            ]
+                            salvar_pacotes(st.session_state.pacotes)
+                            registrar_historico("PACOTE_EXCLUIDO", f"ID {id_pacote} - {pacote['Paciente']}")
+                            st.success("✅ Pacote excluído!")
+                            st.rerun()
+
 
 # ==============================================================================
 # LEMBRETES WHATSAPP
