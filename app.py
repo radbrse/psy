@@ -2825,6 +2825,96 @@ elif menu == "🛠️ Manutenção":
 
         st.info("📌 Backups são criados automaticamente antes de cada salvamento (formato: arquivo.bak.YYYYMMDD_HHMMSS)")
 
+        # Mostrar localização dos backups
+        st.write("**📂 Localização dos Backups:**")
+        diretorio_atual = os.path.abspath(".")
+        st.code(f"{diretorio_atual}/")
+        st.caption("Os arquivos .bak.* ficam no mesmo diretório do sistema")
+
+        st.divider()
+
+        # Upload de CSV externo
+        st.subheader("📤 Importar CSV Externo")
+        st.write("Envie um arquivo CSV para restaurar dados de backup externo ou migração")
+
+        arquivo_destino_upload = st.selectbox(
+            "Selecione qual arquivo deseja substituir:",
+            options=[os.path.basename(f) for f in FILES_TO_BACKUP],
+            key="destino_upload"
+        )
+
+        uploaded_file = st.file_uploader(
+            "Escolha um arquivo CSV",
+            type=['csv'],
+            help="O arquivo será validado antes de importar"
+        )
+
+        if uploaded_file is not None:
+            st.info(f"📄 Arquivo selecionado: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+
+            col_up1, col_up2 = st.columns(2)
+
+            with col_up1:
+                if st.button("👁️ Visualizar CSV", use_container_width=True):
+                    try:
+                        df_preview = pd.read_csv(uploaded_file)
+                        st.write(f"**Linhas:** {len(df_preview)} | **Colunas:** {len(df_preview.columns)}")
+                        st.write("**Colunas encontradas:**")
+                        st.write(", ".join(df_preview.columns.tolist()))
+                        st.dataframe(df_preview.head(10), use_container_width=True)
+                        uploaded_file.seek(0)  # Reset file pointer
+                    except Exception as e:
+                        st.error(f"❌ Erro ao ler CSV: {str(e)}")
+
+            with col_up2:
+                confirmar_upload = st.checkbox("✅ Confirmo a importação", key="confirm_upload")
+
+                if st.button("📥 IMPORTAR CSV", type="primary", use_container_width=True, disabled=not confirmar_upload):
+                    try:
+                        # Determinar arquivo de destino
+                        arquivo_destino = None
+                        for arq in FILES_TO_BACKUP:
+                            if os.path.basename(arq) == arquivo_destino_upload:
+                                arquivo_destino = arq
+                                break
+
+                        if arquivo_destino:
+                            # Criar backup do arquivo atual antes de importar
+                            if os.path.exists(arquivo_destino):
+                                create_backup(arquivo_destino, max_backups=5)
+                                st.info("✅ Backup de segurança do arquivo atual criado")
+
+                            # Ler e validar CSV
+                            df_importado = pd.read_csv(uploaded_file)
+
+                            # Salvar usando atomic write
+                            sucesso = atomic_write(arquivo_destino, df_importado, is_dataframe=True)
+
+                            if sucesso:
+                                st.success(f"✅ CSV importado com sucesso para {arquivo_destino_upload}!")
+                                st.info("🔄 **Importante:** Recarregue os dados para ver as alterações.")
+
+                                registrar_historico(
+                                    "IMPORTAÇÃO",
+                                    f"CSV importado: {uploaded_file.name} → {arquivo_destino_upload}"
+                                )
+
+                                if st.button("🔄 Recarregar Dados Agora", use_container_width=True, key="reload_after_upload"):
+                                    st.session_state.pacientes = carregar_pacientes()
+                                    st.session_state.agendamentos = carregar_agendamentos()
+                                    st.session_state.pacotes = carregar_pacotes()
+                                    st.success("✅ Dados recarregados!")
+                                    st.rerun()
+                            else:
+                                st.error("❌ Erro ao salvar arquivo importado")
+                        else:
+                            st.error("❌ Erro: arquivo de destino não encontrado")
+
+                    except Exception as e:
+                        st.error(f"❌ Erro ao importar CSV: {crypto_manager.sanitize_log(str(e))}")
+
+        st.divider()
+
         # Listar todos os backups disponíveis
         arquivos_backup = []
         for arquivo_base in FILES_TO_BACKUP:
