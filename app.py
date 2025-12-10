@@ -149,17 +149,19 @@ ARQUIVO_PACIENTES = "banco_pacientes.csv"
 ARQUIVO_PACOTES = "banco_pacotes.csv"
 ARQUIVO_HISTORICO = "historico_alteracoes_psi.csv"
 
-# Serviços e Preços
+# Serviços e Preços (valores padrão - editáveis na hora)
 SERVICOS = {
     "Consulta em Neuropsicologia": 150.00,
     "Consulta em Psicoterapia": 150.00,
     "Psicoterapia": 150.00,
-    "Avaliação Neuropsicológica": 2500.00
+    "Avaliação Neuropsicológica": 2500.00,
+    "Pacote": 0.00  # Valor definido pelo pacote ativo
 }
 
 OPCOES_STATUS = ["🔵 Agendado", "🟢 Confirmado", "✅ Realizado", "🟡 Remarcado", "🔴 Cancelado", "⚫ Faltou"]
-OPCOES_PAGAMENTO = ["PAGO", "NÃO PAGO", "PACOTE", "CORTESIA"]
-VERSAO = "1.0"
+OPCOES_PAGAMENTO = ["PAGO", "NÃO PAGO", "PACOTE", "GRATUITO", "INSTITUCIONAL"]
+OPCOES_DURACAO = ["1h", "2h"]
+VERSAO = "1.1"
 
 # Configuração de Logging
 logging.basicConfig(
@@ -370,11 +372,96 @@ def calcular_sessoes_restantes(paciente_nome, df_agendamentos, df_pacotes):
             'restantes': max(0, restantes),
             'total': total_sessoes,
             'validade': validade,
-            'valor': float(pacote['Valor'])
+            'valor': float(pacote['Valor']),
+            'data_compra': pd.to_datetime(pacote['DataCompra']).date()
         }
     except Exception as e:
         logger.error(f"Erro ao calcular sessões: {e}")
         return None
+
+def criar_proximo_agendamento_recorrente(agendamento_atual):
+    """Cria o próximo agendamento recorrente (7 dias depois)."""
+    try:
+        proxima_data = agendamento_atual['Data'] + timedelta(days=7)
+        
+        # Verificar se já existe agendamento para esse dia/hora
+        existe = st.session_state.agendamentos[
+            (st.session_state.agendamentos['Paciente'] == agendamento_atual['Paciente']) &
+            (st.session_state.agendamentos['Data'] == proxima_data) &
+            (st.session_state.agendamentos['Hora'] == agendamento_atual['Hora'])
+        ]
+        
+        if not existe.empty:
+            return None  # Já existe, não cria duplicado
+        
+        # Verificar se está dentro do período do pacote (se aplicável)
+        if agendamento_atual['Pagamento'] == 'PACOTE':
+            info_pacote = calcular_sessoes_restantes(
+                agendamento_atual['Paciente'],
+                st.session_state.agendamentos,
+                st.session_state.pacotes
+            )
+            
+            if not info_pacote or info_pacote['restantes'] <= 0:
+                return None  # Sem sessões disponíveis
+            
+            if proxima_data > info_pacote['validade']:
+                return None  # Fora do período do pacote
+        
+        # Criar novo agendamento
+        novo_id = gerar_id_sequencial(st.session_state.agendamentos)
+        novo_agendamento = pd.DataFrame([{
+            "ID": novo_id,
+            "Paciente": agendamento_atual['Paciente'],
+            "Data": proxima_data,
+            "Hora": agendamento_atual['Hora'],
+            "Duracao": agendamento_atual['Duracao'],
+            "Servico": agendamento_atual['Servico'],
+            "Valor": agendamento_atual['Valor'],
+            "Desconto": agendamento_atual['Desconto'],
+            "ValorFinal": agendamento_atual['ValorFinal'],
+            "Pagamento": agendamento_atual['Pagamento'],
+            "Status": "🔵 Agendado",
+            "Recorrente": True,
+            "Observacoes": agendamento_atual['Observacoes'],
+            "Prontuario": ""
+        }])
+        
+        return novo_agendamento
+    except Exception as e:
+        logger.error(f"Erro ao criar recorrente: {e}")
+        return None
+
+def calcular_hora_fim(hora_inicio, duracao):
+    """Calcula horário de término baseado na duração."""
+    inicio_dt = datetime.combine(date.today(), hora_inicio)
+    if duracao == "2h":
+        fim_dt = inicio_dt + timedelta(hours=2)
+    else:
+        fim_dt = inicio_dt + timedelta(hours=1)
+    return fim_dt.time()
+
+def verificar_conflito_horario(data, hora_inicio, duracao, id_atual=None):
+    """Verifica se há conflito de horário considerando a duração."""
+    hora_fim = calcular_hora_fim(hora_inicio, duracao)
+    
+    agendamentos_dia = st.session_state.agendamentos[
+        (st.session_state.agendamentos['Data'] == data) &
+        (~st.session_state.agendamentos['Status'].isin(['🔴 Cancelado', '🟡 Remarcado']))
+    ]
+    
+    if id_atual:
+        agendamentos_dia = agendamentos_dia[agendamentos_dia['ID'] != id_atual]
+    
+    for _, ag in agendamentos_dia.iterrows():
+        ag_inicio = ag['Hora']
+        ag_fim = calcular_hora_fim(ag_inicio, ag.get('Duracao', '1h'))
+        
+        # Verifica sobreposição
+        if (hora_inicio < ag_fim and hora_fim > ag_inicio):
+            return True, ag
+    
+    return False, None
 
 # ==============================================================================
 # FUNÇÕES DE PERSISTÊNCIA
@@ -413,19 +500,26 @@ def carregar_agendamentos():
             df = pd.read_csv(ARQUIVO_AGENDAMENTOS)
             df['Data'] = pd.to_datetime(df['Data']).dt.date
             df['Hora'] = pd.to_datetime(df['Hora'], format='%H:%M:%S').dt.time
+            
+            # Adicionar colunas novas se não existirem
+            if 'Duracao' not in df.columns:
+                df['Duracao'] = '1h'
+            if 'Recorrente' not in df.columns:
+                df['Recorrente'] = False
+            
             return df
         else:
             return pd.DataFrame(columns=[
-                "ID", "Paciente", "Data", "Hora", "Servico", 
+                "ID", "Paciente", "Data", "Hora", "Duracao", "Servico", 
                 "Valor", "Desconto", "ValorFinal", "Pagamento", 
-                "Status", "Observacoes", "Prontuario"
+                "Status", "Recorrente", "Observacoes", "Prontuario"
             ])
     except Exception as e:
         logger.error(f"Erro ao carregar agendamentos: {e}")
         return pd.DataFrame(columns=[
-            "ID", "Paciente", "Data", "Hora", "Servico", 
+            "ID", "Paciente", "Data", "Hora", "Duracao", "Servico", 
             "Valor", "Desconto", "ValorFinal", "Pagamento", 
-            "Status", "Observacoes", "Prontuario"
+            "Status", "Recorrente", "Observacoes", "Prontuario"
         ])
 
 def salvar_agendamentos(df):
@@ -700,8 +794,47 @@ if menu == "📊 Dashboard":
         st.metric("✅ Sessões Realizadas", sessoes_realizadas)
     
     with col4:
-        receita = df_periodo[df_periodo['Status'] == '✅ Realizado']['ValorFinal'].sum()
+        receita = df_periodo[
+            (df_periodo['Status'] == '✅ Realizado') &
+            (~df_periodo['Pagamento'].isin(['GRATUITO', 'INSTITUCIONAL']))
+        ]['ValorFinal'].sum()
         st.metric("💰 Receita", f"R$ {receita:,.2f}")
+    
+    st.divider()
+    
+    # Alertas de Pacotes Próximos ao Vencimento
+    st.subheader("⚠️ Alertas")
+    
+    hoje = hoje_brasil()
+    limite_alerta = hoje + timedelta(days=5)
+    
+    pacotes_vencendo = st.session_state.pacotes[
+        (st.session_state.pacotes['Status'] == 'ATIVO') &
+        (pd.to_datetime(st.session_state.pacotes['Validade']).dt.date <= limite_alerta) &
+        (pd.to_datetime(st.session_state.pacotes['Validade']).dt.date >= hoje)
+    ]
+    
+    if not pacotes_vencendo.empty:
+        st.warning("🔔 Pacotes próximos ao vencimento:")
+        for _, pacote in pacotes_vencendo.iterrows():
+            validade = pd.to_datetime(pacote['Validade']).date()
+            dias_restantes = (validade - hoje).days
+            
+            if dias_restantes == 0:
+                msg = f"⚠️ **{pacote['Paciente']}** - Pacote vence HOJE ({validade.strftime('%d/%m/%Y')})"
+            elif dias_restantes == 1:
+                msg = f"⚠️ **{pacote['Paciente']}** - Pacote vence AMANHÃ ({validade.strftime('%d/%m/%Y')})"
+            else:
+                msg = f"⚠️ **{pacote['Paciente']}** - Pacote vence em {dias_restantes} dias ({validade.strftime('%d/%m/%Y')})"
+            
+            # Calcular sessões restantes
+            info = calcular_sessoes_restantes(pacote['Paciente'], st.session_state.agendamentos, st.session_state.pacotes)
+            if info:
+                msg += f" - {info['restantes']}/{info['total']} sessões restantes"
+            
+            st.warning(msg)
+    else:
+        st.success("✅ Nenhum pacote próximo ao vencimento")
     
     st.divider()
     
@@ -775,9 +908,33 @@ elif menu == "📅 Agendamentos":
                         format="DD/MM/YYYY"
                     )
                     
+                    hora_consulta = st.time_input(
+                        "⏰ Horário *",
+                        value=time(14, 0)
+                    )
+                    
+                    duracao = st.selectbox(
+                        "⏱️ Duração *",
+                        options=OPCOES_DURACAO,
+                        index=0
+                    )
+                
+                with col2:
                     servico = st.selectbox(
                         "💼 Serviço *",
                         options=list(SERVICOS.keys())
+                    )
+                    
+                    # Valor editável
+                    valor_padrao = SERVICOS[servico]
+                    valor_sessao = st.number_input(
+                        "💰 Valor da Sessão *",
+                        min_value=0.0,
+                        max_value=10000.0,
+                        value=valor_padrao,
+                        step=10.0,
+                        format="%.2f",
+                        help="Você pode editar o valor conforme necessário"
                     )
                     
                     desconto = st.number_input(
@@ -786,12 +943,6 @@ elif menu == "📅 Agendamentos":
                         max_value=100.0,
                         value=0.0,
                         step=5.0
-                    )
-                
-                with col2:
-                    hora_consulta = st.time_input(
-                        "⏰ Horário *",
-                        value=time(14, 0)
                     )
                     
                     # Verificar pacote ativo
@@ -813,12 +964,17 @@ elif menu == "📅 Agendamentos":
                         options=OPCOES_PAGAMENTO,
                         index=OPCOES_PAGAMENTO.index(pagamento_default)
                     )
-                    
-                    status = st.selectbox(
-                        "📊 Status *",
-                        options=OPCOES_STATUS,
-                        index=0
-                    )
+                
+                status = st.selectbox(
+                    "📊 Status *",
+                    options=OPCOES_STATUS,
+                    index=0
+                )
+                
+                recorrente = st.checkbox(
+                    "🔄 Sessão Recorrente",
+                    help="Ao marcar como 'Realizado', cria automaticamente a próxima sessão na semana seguinte"
+                )
                 
                 observacoes = st.text_area(
                     "📝 Observações",
@@ -838,38 +994,36 @@ elif menu == "📅 Agendamentos":
                     data_valida, msg_data = validar_data(data_consulta)
                     hora_valida, msg_hora = validar_hora(hora_consulta)
                     
-                    # Verificar conflito de horário
-                    conflito = st.session_state.agendamentos[
-                        (st.session_state.agendamentos['Data'] == data_valida) &
-                        (st.session_state.agendamentos['Hora'] == hora_valida) &
-                        (~st.session_state.agendamentos['Status'].isin(['🔴 Cancelado', '🟡 Remarcado']))
-                    ]
+                    # Verificar conflito de horário com duração
+                    tem_conflito, ag_conflito = verificar_conflito_horario(data_valida, hora_valida, duracao)
                     
-                    if not conflito.empty:
-                        st.error(f"❌ Já existe agendamento para {data_valida.strftime('%d/%m/%Y')} às {hora_valida.strftime('%H:%M')}")
+                    if tem_conflito:
+                        hora_fim = calcular_hora_fim(hora_valida, duracao)
+                        st.error(f"❌ Conflito de horário! Já existe agendamento de {ag_conflito['Paciente']} às {ag_conflito['Hora'].strftime('%H:%M')}")
+                        st.error(f"Seu horário: {hora_valida.strftime('%H:%M')} - {hora_fim.strftime('%H:%M')} ({duracao})")
                     else:
                         # Verificar se pode usar pacote
                         if pagamento == "PACOTE":
                             if not info_pacote or info_pacote['restantes'] <= 0:
                                 st.error("❌ Paciente não possui sessões disponíveis no pacote!")
                             else:
-                                # Calcular valores
-                                valor_base = SERVICOS[servico]
-                                valor_final = calcular_valor_sessao(servico, desconto)
+                                # Criar agendamento
+                                valor_final = valor_sessao * (1 - desconto / 100)
                                 
-                                # Criar novo agendamento
                                 novo_id = gerar_id_sequencial(st.session_state.agendamentos)
                                 novo_agendamento = pd.DataFrame([{
                                     "ID": novo_id,
                                     "Paciente": paciente_nome,
                                     "Data": data_valida,
                                     "Hora": hora_valida,
+                                    "Duracao": duracao,
                                     "Servico": servico,
-                                    "Valor": valor_base,
+                                    "Valor": valor_sessao,
                                     "Desconto": desconto,
-                                    "ValorFinal": valor_final,
+                                    "ValorFinal": round(valor_final, 2),
                                     "Pagamento": pagamento,
                                     "Status": status,
+                                    "Recorrente": recorrente,
                                     "Observacoes": observacoes,
                                     "Prontuario": ""
                                 }])
@@ -886,12 +1040,13 @@ elif menu == "📅 Agendamentos":
                                 )
                                 
                                 st.success(f"✅ Agendamento confirmado! ID: {novo_id}")
+                                if recorrente:
+                                    st.info("🔄 Sessão recorrente ativada. Próxima sessão será criada automaticamente.")
                                 st.balloons()
                                 st.rerun()
                         else:
                             # Agendamento normal (sem pacote)
-                            valor_base = SERVICOS[servico]
-                            valor_final = calcular_valor_sessao(servico, desconto)
+                            valor_final = valor_sessao * (1 - desconto / 100)
                             
                             novo_id = gerar_id_sequencial(st.session_state.agendamentos)
                             novo_agendamento = pd.DataFrame([{
@@ -899,12 +1054,14 @@ elif menu == "📅 Agendamentos":
                                 "Paciente": paciente_nome,
                                 "Data": data_valida,
                                 "Hora": hora_valida,
+                                "Duracao": duracao,
                                 "Servico": servico,
-                                "Valor": valor_base,
+                                "Valor": valor_sessao,
                                 "Desconto": desconto,
-                                "ValorFinal": valor_final,
+                                "ValorFinal": round(valor_final, 2),
                                 "Pagamento": pagamento,
                                 "Status": status,
+                                "Recorrente": recorrente,
                                 "Observacoes": observacoes,
                                 "Prontuario": ""
                             }])
@@ -921,6 +1078,8 @@ elif menu == "📅 Agendamentos":
                             )
                             
                             st.success(f"✅ Agendamento confirmado! ID: {novo_id}")
+                            if recorrente:
+                                st.info("🔄 Sessão recorrente ativada. Próxima sessão será criada automaticamente.")
                             st.balloons()
                             st.rerun()
     
@@ -989,13 +1148,14 @@ elif menu == "📅 Agendamentos":
             st.write(f"**{len(df_filtrado)} agendamento(s) encontrado(s)**")
             
             df_show = df_filtrado[[
-                'ID', 'Data', 'Hora', 'Paciente', 'Servico', 
-                'ValorFinal', 'Pagamento', 'Status'
+                'ID', 'Data', 'Hora', 'Duracao', 'Paciente', 'Servico', 
+                'ValorFinal', 'Pagamento', 'Status', 'Recorrente'
             ]].copy()
             
             df_show['Data'] = df_show['Data'].apply(lambda x: x.strftime('%d/%m/%Y'))
             df_show['Hora'] = df_show['Hora'].apply(lambda x: x.strftime('%H:%M'))
             df_show['ValorFinal'] = df_show['ValorFinal'].apply(lambda x: f"R$ {x:.2f}")
+            df_show['Recorrente'] = df_show['Recorrente'].apply(lambda x: '🔄' if x else '')
             
             st.dataframe(df_show, use_container_width=True, hide_index=True)
             
@@ -1055,11 +1215,17 @@ elif menu == "📅 Agendamentos":
                 
                 with col1:
                     st.write(f"**Paciente:** {ag['Paciente']}")
-                    st.write(f"**Data:** {ag['Data'].strftime('%d/%m/%Y')} às {ag['Hora'].strftime('%H:%M')}")
+                    
+                    hora_fim = calcular_hora_fim(ag['Hora'], ag.get('Duracao', '1h'))
+                    st.write(f"**Horário:** {ag['Data'].strftime('%d/%m/%Y')} das {ag['Hora'].strftime('%H:%M')} às {hora_fim.strftime('%H:%M')} ({ag.get('Duracao', '1h')})")
+                    
                     st.write(f"**Serviço:** {ag['Servico']}")
                     st.write(f"**Valor:** R$ {ag['ValorFinal']:.2f}")
                     st.write(f"**Pagamento:** {ag['Pagamento']}")
                     st.write(f"**Status:** {ag['Status']}")
+                    
+                    if ag.get('Recorrente', False):
+                        st.write("**🔄 Sessão Recorrente:** Sim")
                 
                 with col2:
                     # Gerar recibo se pago
@@ -1095,6 +1261,12 @@ elif menu == "📅 Agendamentos":
                             options=OPCOES_PAGAMENTO,
                             index=OPCOES_PAGAMENTO.index(ag['Pagamento'])
                         )
+                        
+                        nova_duracao = st.selectbox(
+                            "Duração",
+                            options=OPCOES_DURACAO,
+                            index=OPCOES_DURACAO.index(ag.get('Duracao', '1h'))
+                        )
                     
                     with col2:
                         nova_data = st.date_input(
@@ -1106,6 +1278,11 @@ elif menu == "📅 Agendamentos":
                         nova_hora = st.time_input(
                             "Hora",
                             value=ag['Hora']
+                        )
+                        
+                        novo_recorrente = st.checkbox(
+                            "🔄 Sessão Recorrente",
+                            value=ag.get('Recorrente', False)
                         )
                     
                     novas_obs = st.text_area(
@@ -1127,17 +1304,49 @@ elif menu == "📅 Agendamentos":
                                 st.session_state.agendamentos['ID'] == busca_id
                             ].index[0]
                             
+                            # Verificar se mudou para "Realizado" e é recorrente
+                            criar_recorrente = (
+                                novo_status == '✅ Realizado' and 
+                                ag['Status'] != '✅ Realizado' and
+                                novo_recorrente
+                            )
+                            
                             st.session_state.agendamentos.at[idx, 'Status'] = novo_status
                             st.session_state.agendamentos.at[idx, 'Pagamento'] = novo_pagamento
                             st.session_state.agendamentos.at[idx, 'Data'] = nova_data
                             st.session_state.agendamentos.at[idx, 'Hora'] = nova_hora
+                            st.session_state.agendamentos.at[idx, 'Duracao'] = nova_duracao
+                            st.session_state.agendamentos.at[idx, 'Recorrente'] = novo_recorrente
                             st.session_state.agendamentos.at[idx, 'Observacoes'] = novas_obs
                             st.session_state.agendamentos.at[idx, 'Prontuario'] = prontuario
                             
                             salvar_agendamentos(st.session_state.agendamentos)
                             registrar_historico("AGENDAMENTO_EDITADO", f"ID {busca_id}")
                             
-                            st.success("✅ Agendamento atualizado!")
+                            # Criar próximo agendamento se for recorrente
+                            if criar_recorrente:
+                                agendamento_atualizado = st.session_state.agendamentos[
+                                    st.session_state.agendamentos['ID'] == busca_id
+                                ].iloc[0]
+                                
+                                proximo = criar_proximo_agendamento_recorrente(agendamento_atualizado)
+                                
+                                if proximo is not None:
+                                    st.session_state.agendamentos = pd.concat(
+                                        [st.session_state.agendamentos, proximo],
+                                        ignore_index=True
+                                    )
+                                    salvar_agendamentos(st.session_state.agendamentos)
+                                    
+                                    proxima_data = proximo.iloc[0]['Data']
+                                    st.success("✅ Agendamento atualizado!")
+                                    st.success(f"🔄 Próxima sessão criada para {proxima_data.strftime('%d/%m/%Y')} às {nova_hora.strftime('%H:%M')}")
+                                else:
+                                    st.success("✅ Agendamento atualizado!")
+                                    st.info("ℹ️ Próxima sessão não foi criada (pacote vencido ou sem sessões)")
+                            else:
+                                st.success("✅ Agendamento atualizado!")
+                            
                             st.rerun()
                     
                     with col_submit[2]:
@@ -1756,7 +1965,10 @@ elif menu == "📈 Relatórios":
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            receita_total = df_rel[df_rel['Status'] == '✅ Realizado']['ValorFinal'].sum()
+            receita_total = df_rel[
+                (df_rel['Status'] == '✅ Realizado') &
+                (~df_rel['Pagamento'].isin(['GRATUITO', 'INSTITUCIONAL']))
+            ]['ValorFinal'].sum()
             st.metric("💰 Receita Total", f"R$ {receita_total:,.2f}")
         
         with col2:
