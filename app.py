@@ -273,9 +273,9 @@ def validar_hora(hora):
         if not pd.isna(parsed):
             return parsed.time(), None
         
-        return time(14, 0), f"⚠️ Hora '{hora}' inválida. Usando 14:00."
+        return time(14, 0), f"⚠️ Hora '{hora}' inválida. Usando 07:00."
     except:
-        return time(14, 0), "⚠️ Erro na hora: usando 14:00."
+        return time(14, 0), "⚠️ Erro na hora: usando 07:00."
 
 def validar_cpf_basico(cpf):
     """Validação básica de CPF (apenas formato)."""
@@ -2311,4 +2311,5 @@ elif menu == "🛠️ Manutenção":
             st.session_state.pacotes = carregar_pacotes()
             st.success("✅ Dados recarregados!")
             st.rerun()
+
 
