@@ -27,7 +27,7 @@ def hoje_brasil():
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Agenda Psicologia - Psi. Radamés Soares", 
+    page_title="Agenda Psicologia - Dr. Radamés", 
     page_icon="🧠", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -463,6 +463,17 @@ def verificar_conflito_horario(data, hora_inicio, duracao, id_atual=None):
     
     return False, None
 
+def obter_saudacao():
+    """Retorna saudação apropriada baseada no horário atual."""
+    hora_atual = agora_brasil().hour
+    
+    if 5 <= hora_atual < 12:
+        return "Bom dia"
+    elif 12 <= hora_atual < 18:
+        return "Boa tarde"
+    else:
+        return "Boa noite"
+
 # ==============================================================================
 # FUNÇÕES DE PERSISTÊNCIA
 # ==============================================================================
@@ -748,7 +759,7 @@ with st.sidebar:
                 continue
     
     st.markdown("### 🧠 Agenda Psicologia")
-    st.markdown(f"**Psi. Radamés Soares**")
+    st.markdown(f"**Dr. Radamés**")
     st.markdown(f"CRP 19/5223")
     st.divider()
     
@@ -1969,29 +1980,26 @@ elif menu == "📱 Lembretes":
                 else:
                     telefone = paciente_info.iloc[0]['Telefone']
                     
-                    # Mensagem padrão
+                    # Determinar saudação baseada no horário
+                    saudacao = obter_saudacao()
+                    
+                    # Mensagem padrão personalizada
                     dias_falta = (consulta['Data'] - hoje).days
                     
                     if dias_falta == 0:
-                        periodo = "hoje"
+                        quando = "hoje"
                     elif dias_falta == 1:
-                        periodo = "amanhã"
+                        quando = "amanhã"
                     else:
-                        periodo = f"em {dias_falta} dias"
+                        quando = f"em {dias_falta} dias"
                     
-                    mensagem = f"""Olá, {consulta['Paciente']}! 🧠
+                    mensagem = f"""{saudacao}, {consulta['Paciente']}. Espero que esteja bem.
 
-Este é um lembrete da sua consulta:
+Lembrando {consulta['Servico']} {quando} às {consulta['Hora'].strftime('%H:%M')}.
 
-📅 Data: {consulta['Data'].strftime('%d/%m/%Y')} ({periodo})
-⏰ Horário: {consulta['Hora'].strftime('%H:%M')}
-💼 Serviço: {consulta['Servico']}
+Favor chegar com 10 minutos de antecedência e enviar mensagem para que eu possa abrir a porta.
 
-📍 Local: Consultório Psi. Radamés Soares
-
-Por favor, confirme sua presença ou avise caso precise remarcar.
-
-Qualquer dúvida, estou à disposição! 😊"""
+Obrigado."""
                     
                     msg_editada = st.text_area(
                         "Editar mensagem:",
@@ -2016,19 +2024,59 @@ Qualquer dúvida, estou à disposição! 😊"""
     # Envio manual
     st.subheader("📤 Envio Manual")
     
-    with st.form("form_lembrete_manual"):
+    if st.session_state.pacientes.empty:
+        st.info("Nenhum paciente cadastrado.")
+    else:
         paciente_manual = st.selectbox(
             "Selecione o paciente:",
-            options=sorted(st.session_state.pacientes['Nome'].unique())
+            options=sorted(st.session_state.pacientes['Nome'].unique()),
+            key="paciente_manual_select"
         )
+        
+        # Buscar próximo agendamento do paciente
+        proximo_agendamento = st.session_state.agendamentos[
+            (st.session_state.agendamentos['Paciente'] == paciente_manual) &
+            (st.session_state.agendamentos['Data'] >= hoje_brasil()) &
+            (st.session_state.agendamentos['Status'].isin(['🔵 Agendado', '🟢 Confirmado']))
+        ].sort_values(['Data', 'Hora'])
+        
+        # Gerar mensagem automática se houver agendamento
+        if not proximo_agendamento.empty:
+            prox = proximo_agendamento.iloc[0]
+            saudacao = obter_saudacao()
+            
+            dias_falta = (prox['Data'] - hoje_brasil()).days
+            if dias_falta == 0:
+                quando = "hoje"
+            elif dias_falta == 1:
+                quando = "amanhã"
+            else:
+                quando = f"em {dias_falta} dias ({prox['Data'].strftime('%d/%m/%Y')})"
+            
+            mensagem_auto = f"""{saudacao}, {paciente_manual}. Espero que esteja bem.
+
+Lembrando {prox['Servico']} {quando} às {prox['Hora'].strftime('%H:%M')}.
+
+Favor chegar com 10 minutos de antecedência e enviar mensagem para que eu possa abrir a porta.
+
+Obrigado."""
+            
+            st.success(f"✅ Próximo agendamento: {prox['Data'].strftime('%d/%m/%Y')} às {prox['Hora'].strftime('%H:%M')}")
+        else:
+            saudacao = obter_saudacao()
+            mensagem_auto = f"""{saudacao}, {paciente_manual}. Espero que esteja bem.
+
+"""
+            st.info("ℹ️ Paciente sem agendamentos futuros. Mensagem personalizada gerada.")
         
         mensagem_manual = st.text_area(
             "Mensagem:",
-            placeholder="Digite sua mensagem...",
-            height=150
+            value=mensagem_auto,
+            height=200,
+            key="msg_manual"
         )
         
-        if st.form_submit_button("📱 Gerar Link WhatsApp", use_container_width=True, type="primary"):
+        if st.button("📱 Gerar Link WhatsApp", use_container_width=True, type="primary"):
             paciente_info = st.session_state.pacientes[
                 st.session_state.pacientes['Nome'] == paciente_manual
             ].iloc[0]
@@ -2263,4 +2311,3 @@ elif menu == "🛠️ Manutenção":
             st.session_state.pacotes = carregar_pacotes()
             st.success("✅ Dados recarregados!")
             st.rerun()
-
