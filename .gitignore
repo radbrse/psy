@@ -39,5 +39,16 @@ Thumbs.db
 # Logs
 *.log
 
+# Arquivos de dados sensíveis (IMPORTANTE: não versionar dados reais)
+*.csv
+*.db
+*.sqlite
+
+# Backups (contém dados sensíveis criptografados)
+backups/
+
+# Streamlit secrets (CRÍTICO: nunca versionar senhas!)
+.streamlit/secrets.toml
+
 # CSV data files (opcional - remova se quiser versionar os CSVs)
 # *.csv
