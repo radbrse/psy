@@ -243,15 +243,26 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Configurar localização para pt-BR
+# Configurar localização para pt-BR (calendário em português)
 import locale
 try:
-    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
+    # Tenta configurações pt-BR (Linux/Mac)
+    locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
 except:
     try:
-        locale.setlocale(locale.LC_TIME, 'Portuguese_Brazil.1252')
+        # Tenta configuração Windows
+        locale.setlocale(locale.LC_ALL, 'Portuguese_Brazil.1252')
     except:
-        pass  # Usa padrão do sistema
+        try:
+            # Alternativa pt_BR
+            locale.setlocale(locale.LC_ALL, 'pt_BR')
+        except:
+            # Usa padrão do sistema
+            pass
+
+# Configuração adicional para Streamlit
+os.environ['LANG'] = 'pt_BR.UTF-8'
+os.environ['LC_ALL'] = 'pt_BR.UTF-8'
 
 # CSS Customizado - Tema Profissional Psicologia
 st.markdown("""
@@ -404,13 +415,22 @@ ARQUIVO_PACOTES = "banco_pacotes.csv"
 ARQUIVO_HISTORICO = "historico_alteracoes_psi.csv"
 
 # Serviços e Preços (valores padrão - editáveis na hora)
+# Serviços e Preços (valores padrão - editáveis na hora)
+# Ordem: Psicoterapia primeiro conforme solicitado
 SERVICOS = {
-    "Consulta em Neuropsicologia": 150.00,
-    "Consulta em Psicoterapia": 150.00,
     "Psicoterapia": 150.00,
+    "Consulta em Psicoterapia": 150.00,
+    "Consulta em Neuropsicologia": 150.00,
     "Avaliação Neuropsicológica": 2500.00,
     "Pacote": 0.00  # Valor definido pelo pacote ativo
 }
+
+# Horários disponíveis (horas fechadas)
+HORARIOS_DISPONIVEIS = [
+    "07:00", "08:00", "09:00", "10:00", "11:00", "12:00",
+    "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
+    "19:00", "20:00", "21:00"
+]
 
 OPCOES_STATUS = ["🔵 Agendado", "🟢 Confirmado", "✅ Realizado", "🟡 Remarcado", "🔴 Cancelado", "⚫ Faltou"]
 OPCOES_PAGAMENTO = ["PAGO", "NÃO PAGO", "PACOTE", "GRATUITO", "INSTITUCIONAL"]
@@ -563,6 +583,55 @@ def validar_cpf_basico(cpf):
 
 def formatar_data_br(data):
     """Formata data para padrão brasileiro dd/mm/aaaa."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        try:
+            data = pd.to_datetime(data).date()
+        except:
+            return data
+    return data.strftime("%d/%m/%Y")
+
+def formatar_data_com_dia_semana(data):
+    """
+    Formata data com dia da semana em português.
+    Ex: 10/12/2025 (Terça-feira)
+    """
+    if data is None:
+        return ""
+
+    if isinstance(data, str):
+        try:
+            data = pd.to_datetime(data).date()
+        except:
+            return data
+
+    # Dias da semana em português
+    dias_semana = {
+        0: "Segunda-feira",
+        1: "Terça-feira",
+        2: "Quarta-feira",
+        3: "Quinta-feira",
+        4: "Sexta-feira",
+        5: "Sábado",
+        6: "Domingo"
+    }
+
+    dia_semana = dias_semana[data.weekday()]
+    data_formatada = data.strftime("%d/%m/%Y")
+
+    return f"{data_formatada} ({dia_semana})"
+
+def hora_str_para_time(hora_str):
+    """Converte string HH:MM para objeto time."""
+    try:
+        h, m = hora_str.split(":")
+        return time(int(h), int(m))
+    except:
+        return time(14, 0)
+
+def formatar_data_br_original(data):
+    """Formata data para padrão brasileiro dd/mm/aaaa (função original)."""
     if data is None:
         return ""
     if isinstance(data, str):
@@ -1358,11 +1427,17 @@ elif menu == "📅 Agendamentos":
                         max_value=hoje_brasil() + timedelta(days=365),
                         format="DD/MM/YYYY"
                     )
-                    
-                    hora_consulta = st.time_input(
+
+                    # Mostrar data com dia da semana
+                    st.caption(f"📆 {formatar_data_com_dia_semana(data_consulta)}")
+
+                    # Seleção de hora com dropdown (horas fechadas)
+                    hora_str = st.selectbox(
                         "⏰ Horário *",
-                        value=time(7, 0)
+                        options=HORARIOS_DISPONIVEIS,
+                        index=7  # 14:00 por padrão
                     )
+                    hora_consulta = hora_str_para_time(hora_str)
                     
                     duracao = st.selectbox(
                         "⏱️ Duração *",
@@ -1600,11 +1675,12 @@ elif menu == "📅 Agendamentos":
             st.write(f"**{len(df_filtrado)} agendamento(s) encontrado(s)**")
             
             df_show = df_filtrado[[
-                'ID', 'Data', 'Hora', 'Duracao', 'Paciente', 'Servico', 
+                'ID', 'Data', 'Hora', 'Duracao', 'Paciente', 'Servico',
                 'ValorFinal', 'Pagamento', 'Status', 'Recorrente'
             ]].copy()
-            
-            df_show['Data'] = df_show['Data'].apply(lambda x: x.strftime('%d/%m/%Y'))
+
+            # Formatar Data com dia da semana
+            df_show['Data'] = df_show['Data'].apply(formatar_data_com_dia_semana)
             df_show['Hora'] = df_show['Hora'].apply(lambda x: x.strftime('%H:%M'))
             df_show['ValorFinal'] = df_show['ValorFinal'].apply(lambda x: f"R$ {x:.2f}")
             df_show['Recorrente'] = df_show['Recorrente'].apply(lambda x: '🔄' if x else '')
@@ -1669,7 +1745,7 @@ elif menu == "📅 Agendamentos":
                     st.write(f"**Paciente:** {ag['Paciente']}")
                     
                     hora_fim = calcular_hora_fim(ag['Hora'], ag.get('Duracao', '1h'))
-                    st.write(f"**Horário:** {ag['Data'].strftime('%d/%m/%Y')} das {ag['Hora'].strftime('%H:%M')} às {hora_fim.strftime('%H:%M')} ({ag.get('Duracao', '1h')})")
+                    st.write(f"**Horário:** {formatar_data_com_dia_semana(ag['Data'])} das {ag['Hora'].strftime('%H:%M')} às {hora_fim.strftime('%H:%M')} ({ag.get('Duracao', '1h')})")
                     
                     st.write(f"**Serviço:** {ag['Servico']}")
                     st.write(f"**Valor:** R$ {ag['ValorFinal']:.2f}")
@@ -1726,12 +1802,25 @@ elif menu == "📅 Agendamentos":
                             value=ag['Data'],
                             format="DD/MM/YYYY"
                         )
-                        
-                        nova_hora = st.time_input(
+
+                        # Mostrar data com dia da semana
+                        st.caption(f"📆 {formatar_data_com_dia_semana(nova_data)}")
+
+                        # Seleção de hora com dropdown (horas fechadas)
+                        hora_atual_str = ag['Hora'].strftime('%H:%M')
+                        # Encontrar índice da hora atual, ou usar 14:00 como padrão
+                        try:
+                            hora_idx = HORARIOS_DISPONIVEIS.index(hora_atual_str)
+                        except:
+                            hora_idx = 7  # 14:00
+
+                        nova_hora_str = st.selectbox(
                             "Hora",
-                            value=ag['Hora']
+                            options=HORARIOS_DISPONIVEIS,
+                            index=hora_idx
                         )
-                        
+                        nova_hora = hora_str_para_time(nova_hora_str)
+
                         novo_recorrente = st.checkbox(
                             "🔄 Sessão Recorrente",
                             value=ag.get('Recorrente', False)
