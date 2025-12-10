@@ -2518,7 +2518,7 @@ elif menu == "📱 Lembretes":
         
         for idx, consulta in proximas.iterrows():
             with st.expander(
-                f"📅 {consulta['Data'].strftime('%d/%m/%Y')} às {consulta['Hora'].strftime('%H:%M')} - {consulta['Paciente']}"
+                f"📅 {formatar_data_com_dia_semana(consulta['Data'])} às {consulta['Hora'].strftime('%H:%M')} - {consulta['Paciente']}"
             ):
                 # Buscar telefone do paciente
                 paciente_info = st.session_state.pacientes[
@@ -2601,7 +2601,7 @@ Obrigado."""
             elif dias_falta == 1:
                 quando = "amanhã"
             else:
-                quando = f"em {dias_falta} dias ({prox['Data'].strftime('%d/%m/%Y')})"
+                quando = f"em {dias_falta} dias ({formatar_data_com_dia_semana(prox['Data'])})"
             
             mensagem_auto = f"""{saudacao}, {paciente_manual}. Espero que esteja bem.
 
@@ -2611,7 +2611,7 @@ Favor chegar com 10 minutos de antecedência e enviar mensagem para que eu possa
 
 Obrigado."""
             
-            st.success(f"✅ Próximo agendamento: {prox['Data'].strftime('%d/%m/%Y')} às {prox['Hora'].strftime('%H:%M')}")
+            st.success(f"✅ Próximo agendamento: {formatar_data_com_dia_semana(prox['Data'])} às {prox['Hora'].strftime('%H:%M')}")
         else:
             saudacao = obter_saudacao()
             mensagem_auto = f"""{saudacao}, {paciente_manual}. Espero que esteja bem.
