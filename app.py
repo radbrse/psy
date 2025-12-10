@@ -10,7 +10,7 @@ import re
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 
@@ -273,9 +273,9 @@ def validar_hora(hora):
         if not pd.isna(parsed):
             return parsed.time(), None
         
-        return time(14, 0), f"⚠️ Hora '{hora}' inválida. Usando 07:00."
+        return time(14, 0), f"⚠️ Hora '{hora}' inválida. Usando 14:00."
     except:
-        return time(14, 0), "⚠️ Erro na hora: usando 07:00."
+        return time(14, 0), "⚠️ Erro na hora: usando 14:00."
 
 def validar_cpf_basico(cpf):
     """Validação básica de CPF (apenas formato)."""
@@ -607,13 +607,38 @@ def gerar_agenda_pdf(df, data_inicial, data_final):
         elements = []
         styles = getSampleStyleSheet()
         
+        # Adicionar logo se existir
+        logo_paths = ["logo.png", "assets/logo.png", "./logo.png"]
+        for logo_path in logo_paths:
+            if os.path.exists(logo_path):
+                try:
+                    logo = Image(logo_path, width=3*cm, height=3*cm)
+                    elements.append(logo)
+                    elements.append(Spacer(1, 0.3*cm))
+                    break
+                except:
+                    continue
+        
+        # Cabeçalho
+        header_style = ParagraphStyle(
+            'Header',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor=colors.HexColor('#2C5F7C'),
+            alignment=1
+        )
+        elements.append(Paragraph("Psi. Radamés Soares - CRP 19/5223", header_style))
+        elements.append(Paragraph("Aracaju-SE", header_style))
+        elements.append(Spacer(1, 0.5*cm))
+        
         # Título
         titulo_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Title'],
             fontSize=18,
             textColor=colors.HexColor('#2C5F7C'),
-            spaceAfter=12
+            spaceAfter=12,
+            alignment=1
         )
         elements.append(Paragraph("Agenda de Consultas", titulo_style))
         elements.append(Paragraph(
@@ -640,7 +665,7 @@ def gerar_agenda_pdf(df, data_inicial, data_final):
                     row['Hora'].strftime('%H:%M'),
                     row['Paciente'][:25],
                     row['Servico'][:20],
-                    row['Status'].replace('🔵 ', '').replace('🟢 ', '').replace('✅ ', '')
+                    row['Status'].replace('🔵 ', '').replace('🟢 ', '').replace('✅ ', '').replace('🔴 ', '').replace('⚫ ', '')
                 ])
             
             # Criar tabela
@@ -670,11 +695,37 @@ def gerar_recibo_pdf(agendamento):
     """Gera recibo de pagamento."""
     try:
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=3*cm, bottomMargin=3*cm)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=3*cm)
         elements = []
         styles = getSampleStyleSheet()
         
-        # Cabeçalho
+        # Adicionar logo se existir
+        logo_paths = ["logo.png", "assets/logo.png", "./logo.png"]
+        for logo_path in logo_paths:
+            if os.path.exists(logo_path):
+                try:
+                    logo = Image(logo_path, width=3*cm, height=3*cm)
+                    elements.append(logo)
+                    elements.append(Spacer(1, 0.3*cm))
+                    break
+                except:
+                    continue
+        
+        # Cabeçalho profissional
+        header_style = ParagraphStyle(
+            'Header',
+            parent=styles['Normal'],
+            fontSize=12,
+            textColor=colors.HexColor('#2C5F7C'),
+            alignment=1,
+            spaceAfter=5
+        )
+        elements.append(Paragraph("<b>Psi. Radamés Soares</b>", header_style))
+        elements.append(Paragraph("CRP 19/5223", header_style))
+        elements.append(Paragraph("Aracaju-SE", header_style))
+        elements.append(Spacer(1, 0.5*cm))
+        
+        # Título
         titulo_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Title'],
@@ -716,10 +767,10 @@ def gerar_recibo_pdf(agendamento):
         ))
         
         elements.append(Spacer(1, 2*cm))
-        elements.append(Paragraph(f"Nossa Senhora do Socorro/SE, {agora_brasil().strftime('%d/%m/%Y')}", info_style))
+        elements.append(Paragraph(f"Aracaju-SE, {agora_brasil().strftime('%d/%m/%Y')}", info_style))
         elements.append(Spacer(1, 1.5*cm))
         elements.append(Paragraph("_" * 50, info_style))
-        elements.append(Paragraph("Radamés - CRP 19/5223", info_style))
+        elements.append(Paragraph("Psi. Radamés Soares - CRP 19/5223", info_style))
         
         doc.build(elements)
         buffer.seek(0)
@@ -761,6 +812,7 @@ with st.sidebar:
     st.markdown("### 🧠 Agenda Psicologia")
     st.markdown(f"**Psi. Radamés Soares**")
     st.markdown(f"CRP 19/5223")
+    st.markdown(f"📍 Aracaju-SE")
     st.divider()
     
     menu = st.radio(
@@ -935,7 +987,7 @@ elif menu == "📅 Agendamentos":
                     
                     hora_consulta = st.time_input(
                         "⏰ Horário *",
-                        value=time(14, 0)
+                        value=time(7, 0)
                     )
                     
                     duracao = st.selectbox(
@@ -1561,13 +1613,28 @@ elif menu == "👤 Pacientes":
                     novo_cpf = st.text_input("CPF", value=paciente['CPF'])
                     novo_email = st.text_input("Email", value=paciente['Email'])
                     
-                    data_nasc_atual = pd.to_datetime(paciente['DataNascimento']).date() if paciente['DataNascimento'] else None
-                    nova_data_nasc = st.date_input(
-                        "Data de Nascimento",
-                        value=data_nasc_atual,
-                        max_value=hoje_brasil(),
-                        format="DD/MM/YYYY"
-                    )
+                    # Corrigir problema com data None
+                    data_nasc_atual = None
+                    if paciente['DataNascimento'] and str(paciente['DataNascimento']).strip():
+                        try:
+                            data_nasc_atual = pd.to_datetime(paciente['DataNascimento']).date()
+                        except:
+                            data_nasc_atual = None
+                    
+                    if data_nasc_atual:
+                        nova_data_nasc = st.date_input(
+                            "Data de Nascimento",
+                            value=data_nasc_atual,
+                            max_value=hoje_brasil(),
+                            format="DD/MM/YYYY"
+                        )
+                    else:
+                        nova_data_nasc = st.date_input(
+                            "Data de Nascimento",
+                            value=None,
+                            max_value=hoje_brasil(),
+                            format="DD/MM/YYYY"
+                        )
                 
                 with col2:
                     novo_telefone = st.text_input("Telefone", value=paciente['Telefone'])
@@ -2311,5 +2378,3 @@ elif menu == "🛠️ Manutenção":
             st.session_state.pacotes = carregar_pacotes()
             st.success("✅ Dados recarregados!")
             st.rerun()
-
-
