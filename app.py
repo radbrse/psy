@@ -2769,7 +2769,7 @@ elif menu == "📈 Relatórios":
 elif menu == "🛠️ Manutenção":
     st.title("🛠️ Manutenção do Sistema")
 
-    tab1, tab2, tab3 = st.tabs(["📋 Logs", "📜 Histórico", "⚙️ Configurações"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Logs", "📜 Histórico", "💾 Backups", "⚙️ Configurações"])
     
     # --- TAB 1: LOGS ---
     with tab1:
@@ -2819,8 +2819,176 @@ elif menu == "🛠️ Manutenção":
         else:
             st.info("Nenhuma alteração registrada ainda.")
 
-    # --- TAB 3: CONFIGURAÇÕES ---
+    # --- TAB 3: BACKUPS ---
     with tab3:
+        st.subheader("💾 Gerenciamento de Backups")
+
+        st.info("📌 Backups são criados automaticamente antes de cada salvamento (formato: arquivo.bak.YYYYMMDD_HHMMSS)")
+
+        # Listar todos os backups disponíveis
+        arquivos_backup = []
+        for arquivo_base in FILES_TO_BACKUP:
+            pattern = f"{arquivo_base}.bak.*"
+            backups = glob.glob(pattern)
+            for bak in backups:
+                try:
+                    # Extrair timestamp do nome do arquivo
+                    timestamp_str = bak.split('.bak.')[-1]
+                    timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                    tamanho = os.path.getsize(bak) / 1024  # KB
+
+                    arquivos_backup.append({
+                        'Arquivo': os.path.basename(arquivo_base),
+                        'Backup': os.path.basename(bak),
+                        'Data/Hora': timestamp.strftime("%d/%m/%Y %H:%M:%S"),
+                        'Tamanho (KB)': f"{tamanho:.1f}",
+                        'Caminho': bak,
+                        'Timestamp': timestamp
+                    })
+                except:
+                    pass
+
+        if arquivos_backup:
+            # Ordenar por data (mais recente primeiro)
+            arquivos_backup.sort(key=lambda x: x['Timestamp'], reverse=True)
+
+            st.write(f"**{len(arquivos_backup)} backup(s) disponível(is)**")
+
+            # Criar DataFrame para exibição
+            df_backups = pd.DataFrame(arquivos_backup)
+            df_backups_show = df_backups[['Arquivo', 'Data/Hora', 'Tamanho (KB)']].copy()
+
+            st.dataframe(df_backups_show, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # Restaurar backup
+            st.subheader("🔄 Restaurar Backup")
+            st.warning("⚠️ **ATENÇÃO:** Restaurar um backup substituirá o arquivo atual! Esta ação não pode ser desfeita.")
+
+            # Agrupar backups por arquivo
+            arquivos_disponiveis = sorted(df_backups['Arquivo'].unique())
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                arquivo_selecionado = st.selectbox(
+                    "📁 Selecione o arquivo a restaurar:",
+                    options=arquivos_disponiveis
+                )
+
+            with col2:
+                # Filtrar backups do arquivo selecionado
+                backups_arquivo = df_backups[df_backups['Arquivo'] == arquivo_selecionado]
+
+                backup_opcoes = [
+                    f"{row['Data/Hora']} ({row['Tamanho (KB)']} KB)"
+                    for _, row in backups_arquivo.iterrows()
+                ]
+
+                backup_idx = st.selectbox(
+                    "📅 Selecione a versão:",
+                    options=range(len(backup_opcoes)),
+                    format_func=lambda i: backup_opcoes[i]
+                )
+
+            # Informações do backup selecionado
+            backup_selecionado = backups_arquivo.iloc[backup_idx]
+
+            st.info(f"""
+            **Backup selecionado:**
+            - **Arquivo:** {backup_selecionado['Arquivo']}
+            - **Data/Hora:** {backup_selecionado['Data/Hora']}
+            - **Tamanho:** {backup_selecionado['Tamanho (KB)']} KB
+            - **Caminho:** {backup_selecionado['Backup']}
+            """)
+
+            col_confirm = st.columns([1, 2, 1])
+
+            with col_confirm[1]:
+                confirmar_restauracao = st.checkbox("✅ Confirmo que quero restaurar este backup")
+
+            with col_confirm[1]:
+                if st.button("🔄 RESTAURAR BACKUP", type="primary", use_container_width=True, disabled=not confirmar_restauracao):
+                    try:
+                        # Determinar arquivo de destino
+                        arquivo_destino = None
+                        for arq in FILES_TO_BACKUP:
+                            if os.path.basename(arq) == arquivo_selecionado:
+                                arquivo_destino = arq
+                                break
+
+                        if arquivo_destino:
+                            # Fazer backup do arquivo atual antes de restaurar
+                            if os.path.exists(arquivo_destino):
+                                create_backup(arquivo_destino, max_backups=5)
+
+                            # Restaurar: copiar backup para o arquivo principal
+                            shutil.copy2(backup_selecionado['Caminho'], arquivo_destino)
+
+                            st.success(f"✅ Backup restaurado com sucesso!")
+                            st.info("🔄 **Importante:** Recarregue os dados para ver as alterações.")
+
+                            registrar_historico(
+                                "RESTAURAÇÃO",
+                                f"Backup restaurado: {arquivo_selecionado} de {backup_selecionado['Data/Hora']}"
+                            )
+
+                            if st.button("🔄 Recarregar Dados Agora", use_container_width=True):
+                                st.session_state.pacientes = carregar_pacientes()
+                                st.session_state.agendamentos = carregar_agendamentos()
+                                st.session_state.pacotes = carregar_pacotes()
+                                st.success("✅ Dados recarregados!")
+                                st.rerun()
+                        else:
+                            st.error("❌ Erro: arquivo de destino não encontrado")
+                    except Exception as e:
+                        st.error(f"❌ Erro ao restaurar backup: {crypto_manager.sanitize_log(str(e))}")
+
+            st.divider()
+
+            # Limpeza de backups antigos
+            st.subheader("🗑️ Limpeza de Backups Antigos")
+
+            dias_limite = st.number_input(
+                "Remover backups com mais de quantos dias?",
+                min_value=1,
+                max_value=365,
+                value=30,
+                help="Backups mais antigos que este período serão removidos"
+            )
+
+            # Contar backups antigos
+            data_limite = datetime.now() - timedelta(days=dias_limite)
+            backups_antigos = [b for b in arquivos_backup if b['Timestamp'] < data_limite]
+
+            if backups_antigos:
+                st.warning(f"⚠️ {len(backups_antigos)} backup(s) com mais de {dias_limite} dias")
+
+                if st.button(f"🗑️ Remover {len(backups_antigos)} backup(s) antigo(s)", type="secondary"):
+                    removidos = 0
+                    for bak in backups_antigos:
+                        try:
+                            os.remove(bak['Caminho'])
+                            removidos += 1
+                        except:
+                            pass
+
+                    st.success(f"✅ {removidos} backup(s) removido(s)")
+                    registrar_historico("LIMPEZA", f"Removidos {removidos} backups com mais de {dias_limite} dias")
+                    st.rerun()
+            else:
+                st.success(f"✅ Nenhum backup com mais de {dias_limite} dias")
+        else:
+            st.info("📭 Nenhum backup encontrado ainda. Backups são criados automaticamente ao salvar dados.")
+            st.write("**Como funcionam os backups automáticos:**")
+            st.write("- ✅ Criados automaticamente antes de cada salvamento")
+            st.write("- ✅ Mantém os 5 últimos backups de cada arquivo")
+            st.write("- ✅ Formato: `arquivo.csv.bak.YYYYMMDD_HHMMSS`")
+            st.write("- ✅ Podem ser restaurados a qualquer momento nesta aba")
+
+    # --- TAB 4: CONFIGURAÇÕES ---
+    with tab4:
         st.subheader("⚙️ Configurações do Sistema")
 
         # Status de Segurança (Caruru V18)
