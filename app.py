@@ -733,6 +733,20 @@ if 'pacotes' not in st.session_state:
 # INTERFACE - SIDEBAR
 # ==============================================================================
 with st.sidebar:
+    # Logo - tentar múltiplos caminhos
+    logo_paths = ["logo.png", "assets/logo.png", "./logo.png", "../logo.png"]
+    logo_carregada = False
+    
+    for logo_path in logo_paths:
+        if os.path.exists(logo_path):
+            try:
+                st.image(logo_path, use_container_width=True)
+                st.divider()
+                logo_carregada = True
+                break
+            except:
+                continue
+    
     st.markdown("### 🧠 Agenda Psicologia")
     st.markdown(f"**Dr. Radamés**")
     st.markdown(f"CRP 19/5223")
