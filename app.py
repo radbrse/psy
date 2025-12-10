@@ -27,7 +27,7 @@ def hoje_brasil():
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Agenda Psicologia - Dr. Radamés", 
+    page_title="Agenda Psicologia - Psi. Radamés Soares", 
     page_icon="🧠", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -759,7 +759,7 @@ with st.sidebar:
                 continue
     
     st.markdown("### 🧠 Agenda Psicologia")
-    st.markdown(f"**Dr. Radamés**")
+    st.markdown(f"**Psi. Radamés Soares**")
     st.markdown(f"CRP 19/5223")
     st.divider()
     
@@ -2311,3 +2311,4 @@ elif menu == "🛠️ Manutenção":
             st.session_state.pacotes = carregar_pacotes()
             st.success("✅ Dados recarregados!")
             st.rerun()
+
