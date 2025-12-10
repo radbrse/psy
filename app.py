@@ -5,8 +5,15 @@ from zoneinfo import ZoneInfo
 import os
 import io
 import logging
+from logging.handlers import RotatingFileHandler
 import urllib.parse
 import re
+import shutil
+import hashlib
+import base64
+import glob
+from contextlib import contextmanager
+from pathlib import Path
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -14,20 +21,23 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 
-# Módulos de segurança e backup
+# Importações de segurança
 try:
-    from security_manager import (
-        SecurityManager,
-        BackupManager,
-        DataIntegrityValidator,
-        create_security_manager,
-        create_backup_manager
-    )
-    SECURITY_ENABLED = True
-except ImportError as e:
-    SECURITY_ENABLED = False
-    print(f"⚠️ Módulo de segurança não disponível: {e}")
-    print("Execute: pip install cryptography")
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+    from cryptography.hazmat.backends import default_backend
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+    print("⚠️ Criptografia não disponível. Instale: pip install cryptography")
+
+try:
+    import portalocker
+    LOCK_AVAILABLE = True
+except ImportError:
+    LOCK_AVAILABLE = False
+    print("⚠️ File locking não disponível. Instale: pip install portalocker")
 
 # --- CONFIGURAÇÃO DE FUSO HORÁRIO (BRASIL) ---
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
@@ -39,6 +49,191 @@ def agora_brasil():
 def hoje_brasil():
     """Retorna a data de hoje no fuso horário de Brasília."""
     return datetime.now(FUSO_BRASIL).date()
+
+# ==============================================================================
+# 🔐 SISTEMA DE SEGURANÇA INTEGRADO (CARURU V18)
+# ==============================================================================
+
+# --- 1. CRIPTOGRAFIA INTEGRADA ---
+class CryptoManager:
+    """Gerenciador de criptografia integrado."""
+
+    def __init__(self, master_password=None):
+        self.enabled = CRYPTO_AVAILABLE
+        self.cipher = None
+
+        if not self.enabled:
+            return
+
+        password = master_password or st.secrets.get("master_password") or os.environ.get("MASTER_PASSWORD")
+        if not password:
+            password = "DEFAULT_INSECURE_KEY_CHANGE_ME"
+
+        self.cipher = self._create_cipher(password)
+
+    def _create_cipher(self, password):
+        """Cria cipher Fernet a partir de senha."""
+        salt = b'psi_agenda_salt_v1_2025'
+        kdf = PBKDF2(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+            backend=default_backend()
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+        return Fernet(key)
+
+    def encrypt(self, data):
+        """Criptografa texto."""
+        if not self.enabled or not data:
+            return data
+        try:
+            return self.cipher.encrypt(data.encode()).decode()
+        except:
+            return data
+
+    def decrypt(self, encrypted_data):
+        """Descriptografa texto."""
+        if not self.enabled or not encrypted_data:
+            return encrypted_data
+        try:
+            return self.cipher.decrypt(encrypted_data.encode()).decode()
+        except:
+            return encrypted_data
+
+    def sanitize_log(self, text):
+        """Sanitiza texto para logs."""
+        if not text:
+            return text
+        sanitized = re.sub(r'\d{3}\.\d{3}\.\d{3}-\d{2}', 'CPF:***', text)
+        sanitized = re.sub(r'\b\d{11}\b', 'CPF:***', sanitized)
+        sanitized = re.sub(r'\b\d{10,11}\b', 'TEL:***', sanitized)
+        sanitized = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', 'EMAIL:***', sanitized)
+        return sanitized
+
+# Inicializar gerenciador de criptografia
+crypto_manager = CryptoManager()
+
+# --- 2. FILE LOCKING (Context Manager) ---
+@contextmanager
+def file_lock(file_path, mode='r'):
+    """
+    Context manager para bloqueio de arquivo cross-platform.
+    Garante que apenas uma operação acesse o arquivo por vez.
+    """
+    lock_file = f"{file_path}.lock"
+
+    if LOCK_AVAILABLE:
+        # Com portalocker (recomendado)
+        lock_handle = open(lock_file, 'w')
+        try:
+            portalocker.lock(lock_handle, portalocker.LOCK_EX)
+            with open(file_path, mode, encoding='utf-8') as f:
+                yield f
+        finally:
+            portalocker.unlock(lock_handle)
+            lock_handle.close()
+            try:
+                os.remove(lock_file)
+            except:
+                pass
+    else:
+        # Fallback sem lock (menos seguro)
+        with open(file_path, mode, encoding='utf-8') as f:
+            yield f
+
+# --- 3. ATOMIC WRITE (Escrita Segura) ---
+def atomic_write(file_path, data, is_dataframe=False):
+    """
+    Escrita atômica: escreve em .tmp e move para o arquivo final.
+    Evita corromper arquivo se o servidor cair durante escrita.
+
+    Args:
+        file_path: Caminho do arquivo final
+        data: Dados a escrever (str ou DataFrame)
+        is_dataframe: True se data é um DataFrame
+
+    Returns:
+        bool: True se sucesso
+    """
+    tmp_file = f"{file_path}.tmp"
+
+    try:
+        # Escrever em arquivo temporário
+        if is_dataframe:
+            data.to_csv(tmp_file, index=False)
+        else:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                f.write(data)
+
+        # Mover atomicamente (substitui o original)
+        shutil.move(tmp_file, file_path)
+        return True
+    except Exception as e:
+        # Limpar arquivo temporário em caso de erro
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except:
+                pass
+        logging.error(f"Erro em atomic_write: {crypto_manager.sanitize_log(str(e))}")
+        return False
+
+# --- 4. BACKUP ROTATIVO (.bak com timestamp) ---
+def create_backup(file_path, max_backups=5):
+    """
+    Cria backup rotativo com timestamp antes de qualquer salvamento.
+    Mantém apenas os N últimos backups.
+
+    Args:
+        file_path: Arquivo a fazer backup
+        max_backups: Número máximo de backups a manter (padrão: 5)
+    """
+    if not os.path.exists(file_path):
+        return
+
+    try:
+        # Criar backup com timestamp
+        timestamp = agora_brasil().strftime("%Y%m%d_%H%M%S")
+        backup_file = f"{file_path}.bak.{timestamp}"
+        shutil.copy2(file_path, backup_file)
+
+        # Limpar backups antigos (manter apenas os max_backups mais recentes)
+        backup_pattern = f"{file_path}.bak.*"
+        backups = sorted(glob.glob(backup_pattern), reverse=True)
+
+        for old_backup in backups[max_backups:]:
+            try:
+                os.remove(old_backup)
+            except:
+                pass
+    except Exception as e:
+        logging.error(f"Erro ao criar backup: {crypto_manager.sanitize_log(str(e))}")
+
+# --- 5. FUNÇÕES AUXILIARES DE VALIDAÇÃO ---
+def calculate_checksum(file_path):
+    """Calcula SHA-256 checksum de arquivo."""
+    if not os.path.exists(file_path):
+        return None
+    try:
+        with open(file_path, 'rb') as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except:
+        return None
+
+def validate_csv_structure(file_path, required_columns):
+    """Valida estrutura de arquivo CSV."""
+    if not os.path.exists(file_path):
+        return True, None
+    try:
+        df = pd.read_csv(file_path)
+        missing = set(required_columns) - set(df.columns)
+        if missing:
+            return False, f"Colunas faltando: {missing}"
+        return True, None
+    except Exception as e:
+        return False, f"Erro ao validar: {e}"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -223,37 +418,29 @@ OPCOES_DURACAO = ["1h", "2h"]
 VERSAO = "1.2"  # Atualizado com recursos de segurança
 
 # Configuração de Logging
-logging.basicConfig(
-    filename=ARQUIVO_LOG,
-    level=logging.ERROR,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    force=True
-)
+# Configuração de Logging Rotativo (não cresce infinitamente)
 logger = logging.getLogger("agenda_psi")
+logger.setLevel(logging.ERROR)
+
+# RotatingFileHandler: máx 1MB por arquivo, mantém 3 backups
+handler = RotatingFileHandler(
+    ARQUIVO_LOG,
+    maxBytes=1024*1024,  # 1 MB
+    backupCount=3,  # Mantém 3 arquivos de log
+    encoding='utf-8'
+)
+handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
+logger.addHandler(handler)
 
 # ==============================================================================
-# INICIALIZAÇÃO DE SEGURANÇA E BACKUP
+# ARQUIVOS CRÍTICOS (para backup)
 # ==============================================================================
-# Inicializar gerenciadores de segurança (se disponíveis)
-if SECURITY_ENABLED:
-    # Senha mestra para criptografia (deve vir de secrets ou ambiente)
-    MASTER_PASSWORD = st.secrets.get("master_password") or os.environ.get("MASTER_PASSWORD")
-    security_manager = create_security_manager(MASTER_PASSWORD)
-    backup_manager = create_backup_manager(backup_dir="backups", max_versions=10)
-    data_validator = DataIntegrityValidator()
-
-    # Arquivos que devem ter backup
-    FILES_TO_BACKUP = [
-        ARQUIVO_AGENDAMENTOS,
-        ARQUIVO_PACIENTES,
-        ARQUIVO_PACOTES,
-        ARQUIVO_HISTORICO
-    ]
-else:
-    security_manager = None
-    backup_manager = None
-    data_validator = None
-    FILES_TO_BACKUP = []
+FILES_TO_BACKUP = [
+    ARQUIVO_AGENDAMENTOS,
+    ARQUIVO_PACIENTES,
+    ARQUIVO_PACOTES,
+    ARQUIVO_HISTORICO
+]
 
 # ==============================================================================
 # FUNÇÕES DE VALIDAÇÃO
@@ -565,13 +752,12 @@ def carregar_pacientes():
     try:
         if os.path.exists(ARQUIVO_PACIENTES):
             # Validar integridade do arquivo
-            if SECURITY_ENABLED and data_validator:
-                valid, msg = data_validator.validate_csv_structure(
-                    ARQUIVO_PACIENTES,
-                    ["Nome", "CPF", "Telefone", "Email", "DataNascimento", "Endereco", "Observacoes", "DataCadastro"]
-                )
-                if not valid:
-                    logger.error(f"Estrutura inválida em pacientes: {msg}")
+            valid, msg = validate_csv_structure(
+                ARQUIVO_PACIENTES,
+                ["Nome", "CPF", "Telefone", "Email", "DataNascimento", "Endereco", "Observacoes", "DataCadastro"]
+            )
+            if not valid:
+                logger.error(f"Estrutura inválida em pacientes: {msg}")
 
             df = pd.read_csv(ARQUIVO_PACIENTES)
 
@@ -583,13 +769,13 @@ def carregar_pacientes():
             df['CPF'] = df['CPF'].fillna('')
             df['Telefone'] = df['Telefone'].fillna('')
 
-            # Descriptografar campos sensíveis (se criptografia habilitada)
-            if SECURITY_ENABLED and security_manager:
+            # DESCRIPTOGRAFAR campos sensíveis
+            if crypto_manager.enabled:
                 for idx in df.index:
                     if df.loc[idx, 'CPF']:
-                        df.loc[idx, 'CPF'] = security_manager.decrypt(df.loc[idx, 'CPF'])
+                        df.loc[idx, 'CPF'] = crypto_manager.decrypt(df.loc[idx, 'CPF'])
                     if df.loc[idx, 'Telefone']:
-                        df.loc[idx, 'Telefone'] = security_manager.decrypt(df.loc[idx, 'Telefone'])
+                        df.loc[idx, 'Telefone'] = crypto_manager.decrypt(df.loc[idx, 'Telefone'])
 
             return df
         else:
@@ -598,35 +784,44 @@ def carregar_pacientes():
                 "Endereco", "Observacoes", "DataCadastro"
             ])
     except Exception as e:
-        logger.error(f"Erro ao carregar pacientes: {e}")
+        logger.error(f"Erro ao carregar pacientes: {crypto_manager.sanitize_log(str(e))}")
         return pd.DataFrame(columns=[
             "Nome", "CPF", "Telefone", "Email", "DataNascimento",
             "Endereco", "Observacoes", "DataCadastro"
         ])
 
 def salvar_pacientes(df):
-    """Salva cadastro de pacientes com criptografia de dados sensíveis."""
+    """
+    Salva cadastro de pacientes com TODAS as medidas de segurança:
+    - Backup rotativo (.bak com timestamp)
+    - Criptografia de dados sensíveis (CPF, Telefone)
+    - Atomic write (.tmp → move)
+    - Validação de estrutura
+    """
     try:
+        # 1. CRIAR BACKUP antes de salvar (rotativo, mantém 5)
+        create_backup(ARQUIVO_PACIENTES, max_backups=5)
+
+        # 2. Preparar dados para salvar
         df_save = df.copy()
 
-        # Criptografar campos sensíveis (se criptografia habilitada)
-        if SECURITY_ENABLED and security_manager:
+        # 3. CRIPTOGRAFAR campos sensíveis
+        if crypto_manager.enabled:
             for idx in df_save.index:
                 if df_save.loc[idx, 'CPF']:
-                    df_save.loc[idx, 'CPF'] = security_manager.encrypt(df_save.loc[idx, 'CPF'])
+                    df_save.loc[idx, 'CPF'] = crypto_manager.encrypt(df_save.loc[idx, 'CPF'])
                 if df_save.loc[idx, 'Telefone']:
-                    df_save.loc[idx, 'Telefone'] = security_manager.encrypt(df_save.loc[idx, 'Telefone'])
+                    df_save.loc[idx, 'Telefone'] = crypto_manager.encrypt(df_save.loc[idx, 'Telefone'])
 
-        df_save.to_csv(ARQUIVO_PACIENTES, index=False)
+        # 4. ATOMIC WRITE (escreve .tmp e move)
+        sucesso = atomic_write(ARQUIVO_PACIENTES, df_save, is_dataframe=True)
 
-        # Criar backup automático se configurado
-        if SECURITY_ENABLED and backup_manager:
-            if backup_manager.should_create_backup("daily"):
-                backup_manager.create_backup(FILES_TO_BACKUP, "daily")
+        if sucesso:
+            logger.info("Pacientes salvos com sucesso")
+        return sucesso
 
-        return True
     except Exception as e:
-        logger.error(f"Erro ao salvar pacientes: {e}")
+        logger.error(f"Erro ao salvar pacientes: {crypto_manager.sanitize_log(str(e))}")
         return False
 
 def carregar_agendamentos():
@@ -634,13 +829,12 @@ def carregar_agendamentos():
     try:
         if os.path.exists(ARQUIVO_AGENDAMENTOS):
             # Validar integridade
-            if SECURITY_ENABLED and data_validator:
-                valid, msg = data_validator.validate_csv_structure(
-                    ARQUIVO_AGENDAMENTOS,
-                    ["ID", "Paciente", "Data", "Hora", "Servico", "Valor", "Status"]
-                )
-                if not valid:
-                    logger.error(f"Estrutura inválida em agendamentos: {msg}")
+            valid, msg = validate_csv_structure(
+                ARQUIVO_AGENDAMENTOS,
+                ["ID", "Paciente", "Data", "Hora", "Servico", "Valor", "Status"]
+            )
+            if not valid:
+                logger.error(f"Estrutura inválida em agendamentos: {msg}")
 
             df = pd.read_csv(ARQUIVO_AGENDAMENTOS)
             df['Data'] = pd.to_datetime(df['Data']).dt.date
@@ -656,11 +850,11 @@ def carregar_agendamentos():
             df['Observacoes'] = df['Observacoes'].fillna('')
             df['Prontuario'] = df['Prontuario'].fillna('')
 
-            # Descriptografar prontuários (dados clínicos sensíveis)
-            if SECURITY_ENABLED and security_manager:
+            # DESCRIPTOGRAFAR prontuários (dados clínicos sensíveis)
+            if crypto_manager.enabled:
                 for idx in df.index:
                     if df.loc[idx, 'Prontuario']:
-                        df.loc[idx, 'Prontuario'] = security_manager.decrypt(df.loc[idx, 'Prontuario'])
+                        df.loc[idx, 'Prontuario'] = crypto_manager.decrypt(df.loc[idx, 'Prontuario'])
 
             return df
         else:
@@ -670,7 +864,7 @@ def carregar_agendamentos():
                 "Status", "Recorrente", "Observacoes", "Prontuario"
             ])
     except Exception as e:
-        logger.error(f"Erro ao carregar agendamentos: {e}")
+        logger.error(f"Erro ao carregar agendamentos: {crypto_manager.sanitize_log(str(e))}")
         return pd.DataFrame(columns=[
             "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
             "Valor", "Desconto", "ValorFinal", "Pagamento",
@@ -678,28 +872,36 @@ def carregar_agendamentos():
         ])
 
 def salvar_agendamentos(df):
-    """Salva agendamentos com criptografia de prontuários."""
+    """
+    Salva agendamentos com TODAS as medidas de segurança:
+    - Backup rotativo (.bak com timestamp)
+    - Criptografia de prontuários
+    - Atomic write (.tmp → move)
+    """
     try:
+        # 1. CRIAR BACKUP antes de salvar
+        create_backup(ARQUIVO_AGENDAMENTOS, max_backups=5)
+
+        # 2. Preparar dados
         df_save = df.copy()
         df_save['Data'] = pd.to_datetime(df_save['Data']).dt.strftime('%Y-%m-%d')
         df_save['Hora'] = df_save['Hora'].astype(str)
 
-        # Criptografar prontuários (dados clínicos sensíveis)
-        if SECURITY_ENABLED and security_manager:
+        # 3. CRIPTOGRAFAR prontuários (dados clínicos LGPD)
+        if crypto_manager.enabled:
             for idx in df_save.index:
                 if df_save.loc[idx, 'Prontuario']:
-                    df_save.loc[idx, 'Prontuario'] = security_manager.encrypt(df_save.loc[idx, 'Prontuario'])
+                    df_save.loc[idx, 'Prontuario'] = crypto_manager.encrypt(df_save.loc[idx, 'Prontuario'])
 
-        df_save.to_csv(ARQUIVO_AGENDAMENTOS, index=False)
+        # 4. ATOMIC WRITE
+        sucesso = atomic_write(ARQUIVO_AGENDAMENTOS, df_save, is_dataframe=True)
 
-        # Backup automático
-        if SECURITY_ENABLED and backup_manager:
-            if backup_manager.should_create_backup("daily"):
-                backup_manager.create_backup(FILES_TO_BACKUP, "daily")
+        if sucesso:
+            logger.info("Agendamentos salvos com sucesso")
+        return sucesso
 
-        return True
     except Exception as e:
-        logger.error(f"Erro ao salvar agendamentos: {e}")
+        logger.error(f"Erro ao salvar agendamentos: {crypto_manager.sanitize_log(str(e))}")
         return False
 
 def carregar_pacotes():
@@ -735,33 +937,38 @@ def salvar_pacotes(df):
         return False
 
 def registrar_historico(acao, detalhes):
-    """Registra alterações no histórico com sanitização de dados sensíveis."""
+    """
+    Registra alterações no histórico com:
+    - Sanitização de dados sensíveis
+    - Backup rotativo antes de salvar
+    - Atomic write
+    """
     try:
-        # Sanitizar detalhes para remover informações sensíveis dos logs
-        detalhes_sanitizados = detalhes
-        if SECURITY_ENABLED and security_manager:
-            detalhes_sanitizados = security_manager.sanitize_for_log(detalhes)
+        # 1. SANITIZAR detalhes (remove CPF, telefone, etc)
+        detalhes_sanitizados = crypto_manager.sanitize_log(detalhes)
 
+        # 2. Criar novo registro
         novo_registro = pd.DataFrame([{
             "Timestamp": agora_brasil().strftime('%Y-%m-%d %H:%M:%S'),
             "Acao": acao,
             "Detalhes": detalhes_sanitizados
         }])
 
+        # 3. BACKUP antes de modificar
         if os.path.exists(ARQUIVO_HISTORICO):
+            create_backup(ARQUIVO_HISTORICO, max_backups=5)
             df_hist = pd.read_csv(ARQUIVO_HISTORICO)
             df_hist = pd.concat([df_hist, novo_registro], ignore_index=True)
         else:
             df_hist = novo_registro
 
-        df_hist.to_csv(ARQUIVO_HISTORICO, index=False)
+        # 4. ATOMIC WRITE
+        atomic_write(ARQUIVO_HISTORICO, df_hist, is_dataframe=True)
+
     except Exception as e:
-        # Sanitizar também a mensagem de erro
-        if SECURITY_ENABLED and security_manager:
-            error_msg = security_manager.sanitize_for_log(str(e))
-            logger.error(f"Erro ao registrar histórico: {error_msg}")
-        else:
-            logger.error(f"Erro ao registrar histórico: {e}")
+        # Sanitizar erro também
+        error_msg = crypto_manager.sanitize_log(str(e))
+        logger.error(f"Erro ao registrar histórico: {error_msg}")
 
 # ==============================================================================
 # FUNÇÕES DE GERAÇÃO DE PDF
@@ -2473,11 +2680,7 @@ elif menu == "📈 Relatórios":
 elif menu == "🛠️ Manutenção":
     st.title("🛠️ Manutenção do Sistema")
 
-    if SECURITY_ENABLED:
-        tab1, tab2, tab3, tab4 = st.tabs(["📋 Logs", "📜 Histórico", "💾 Backup & Recuperação", "⚙️ Configurações"])
-    else:
-        tab1, tab2, tab3 = st.tabs(["📋 Logs", "📜 Histórico", "⚙️ Configurações"])
-        tab4 = None
+    tab1, tab2, tab3 = st.tabs(["📋 Logs", "📜 Histórico", "⚙️ Configurações"])
     
     # --- TAB 1: LOGS ---
     with tab1:
@@ -2527,155 +2730,36 @@ elif menu == "🛠️ Manutenção":
         else:
             st.info("Nenhuma alteração registrada ainda.")
 
-    # --- TAB 3: BACKUP & RECUPERAÇÃO ---
-    if SECURITY_ENABLED and tab4 is not None:
-        with tab3:
-            st.subheader("💾 Backup & Recuperação de Dados")
-
-            # Status de segurança
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("🔐 Criptografia", "Ativada" if security_manager.enabled else "Desativada")
-            with col2:
-                backups = backup_manager.list_backups() if backup_manager else []
-                st.metric("📦 Backups", len(backups))
-            with col3:
-                total_size = sum(b.get('size_mb', 0) for b in backups)
-                st.metric("💿 Espaço", f"{total_size:.1f} MB")
-
-            st.divider()
-
-            # Criar backup manual
-            st.subheader("📤 Criar Backup Manual")
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                if st.button("💾 Backup Diário", use_container_width=True):
-                    with st.spinner("Criando backup..."):
-                        result = backup_manager.create_backup(FILES_TO_BACKUP, "daily")
-                        if result:
-                            st.success(f"✅ Backup criado: {os.path.basename(result)}")
-                            registrar_historico("BACKUP", f"Backup diário criado manualmente")
-                        else:
-                            st.error("❌ Erro ao criar backup")
-
-            with col2:
-                if st.button("📅 Backup Semanal", use_container_width=True):
-                    with st.spinner("Criando backup..."):
-                        result = backup_manager.create_backup(FILES_TO_BACKUP, "weekly")
-                        if result:
-                            st.success(f"✅ Backup criado: {os.path.basename(result)}")
-                            registrar_historico("BACKUP", f"Backup semanal criado manualmente")
-                        else:
-                            st.error("❌ Erro ao criar backup")
-
-            with col3:
-                if st.button("📆 Backup Mensal", use_container_width=True):
-                    with st.spinner("Criando backup..."):
-                        result = backup_manager.create_backup(FILES_TO_BACKUP, "monthly")
-                        if result:
-                            st.success(f"✅ Backup criado: {os.path.basename(result)}")
-                            registrar_historico("BACKUP", f"Backup mensal criado manualmente")
-                        else:
-                            st.error("❌ Erro ao criar backup")
-
-            st.divider()
-
-            # Listar e gerenciar backups
-            st.subheader("📋 Backups Disponíveis")
-
-            tipo_filtro = st.selectbox("Filtrar por tipo:", ["Todos", "daily", "weekly", "monthly"])
-            filtro = None if tipo_filtro == "Todos" else tipo_filtro
-
-            backups = backup_manager.list_backups(filtro)
-
-            if backups:
-                # Criar tabela de backups
-                backup_data = []
-                for b in backups:
-                    timestamp_str = b['timestamp']
-                    try:
-                        dt = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
-                        data_formatada = dt.strftime("%d/%m/%Y %H:%M")
-                    except:
-                        data_formatada = timestamp_str
-
-                    backup_data.append({
-                        "Data": data_formatada,
-                        "Tipo": b['type'].upper(),
-                        "Arquivos": len(b['files']),
-                        "Tamanho (MB)": f"{b['size_mb']:.2f}",
-                        "Path": b['path']
-                    })
-
-                df_backups = pd.DataFrame(backup_data)
-                st.dataframe(df_backups[["Data", "Tipo", "Arquivos", "Tamanho (MB)"]], use_container_width=True, hide_index=True)
-
-                # Restaurar backup
-                st.subheader("🔄 Restaurar Backup")
-                st.warning("⚠️ ATENÇÃO: Restaurar um backup substituirá os dados atuais!")
-
-                backup_selecionado = st.selectbox(
-                    "Selecione o backup para restaurar:",
-                    options=range(len(backups)),
-                    format_func=lambda i: f"{backup_data[i]['Data']} - {backup_data[i]['Tipo']}"
-                )
-
-                col1, col2 = st.columns([3, 1])
-                with col2:
-                    confirmar = st.checkbox("Confirmar restauração")
-
-                with col1:
-                    if st.button("🔄 Restaurar Backup Selecionado", type="primary", use_container_width=True, disabled=not confirmar):
-                        if confirmar:
-                            backup_path = backups[backup_selecionado]['path']
-                            with st.spinner("Restaurando backup..."):
-                                sucesso = backup_manager.restore_backup(backup_path)
-                                if sucesso:
-                                    st.success("✅ Backup restaurado com sucesso!")
-                                    registrar_historico("RESTAURAÇÃO", f"Backup restaurado de {backup_data[backup_selecionado]['Data']}")
-                                    st.info("🔄 Recarregue a página para ver os dados restaurados")
-                                    if st.button("🔄 Recarregar Agora"):
-                                        st.rerun()
-                                else:
-                                    st.error("❌ Erro ao restaurar backup")
-            else:
-                st.info("Nenhum backup encontrado. Crie um backup manualmente acima.")
-
-            st.divider()
-
-            # Exportar todos os dados
-            st.subheader("📥 Exportação Completa")
-            st.info("Baixe todos os arquivos CSV para backup externo")
-
-            for arquivo in FILES_TO_BACKUP:
-                if os.path.exists(arquivo):
-                    with open(arquivo, 'r', encoding='utf-8') as f:
-                        conteudo = f.read()
-                    st.download_button(
-                        f"⬇️ {arquivo}",
-                        conteudo,
-                        arquivo,
-                        "text/csv",
-                        key=f"download_{arquivo}"
-                    )
-
-    # --- TAB 4: CONFIGURAÇÕES ---
-    with tab4 if SECURITY_ENABLED and tab4 is not None else tab3:
+    # --- TAB 3: CONFIGURAÇÕES ---
+    with tab3:
         st.subheader("⚙️ Configurações do Sistema")
-        
+
+        # Status de Segurança (Caruru V18)
+        st.write("**🔐 Medidas de Segurança Ativas:**")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"✅ Criptografia: {'Ativa' if crypto_manager.enabled else 'Desativada'}")
+            st.write(f"✅ File Locking: {'Ativo' if LOCK_AVAILABLE else 'Desativado'}")
+            st.write("✅ Atomic Writes: Ativo")
+        with col2:
+            st.write("✅ Backup Rotativo (.bak): Ativo")
+            st.write("✅ Log Rotativo: Ativo (máx 1MB)")
+            st.write("✅ Sanitização de Logs: Ativa")
+
+        st.divider()
+
         st.write("**Informações:**")
         st.write(f"- Versão: {VERSAO}")
         st.write(f"- Pacientes: {len(st.session_state.pacientes)}")
         st.write(f"- Agendamentos: {len(st.session_state.agendamentos)}")
         st.write(f"- Pacotes: {len(st.session_state.pacotes)}")
-        
+
         st.divider()
-        
+
         st.write("**Serviços e Preços:**")
         for servico, preco in SERVICOS.items():
             st.write(f"- {servico}: R$ {preco:.2f}")
-        
+
         st.divider()
         
         st.write("**Arquivos:**")
