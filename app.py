@@ -482,6 +482,15 @@ def carregar_pacientes():
     try:
         if os.path.exists(ARQUIVO_PACIENTES):
             df = pd.read_csv(ARQUIVO_PACIENTES)
+
+            # Preencher valores NaN em campos de texto
+            df['Email'] = df['Email'].fillna('')
+            df['Endereco'] = df['Endereco'].fillna('')
+            df['Observacoes'] = df['Observacoes'].fillna('')
+            df['DataNascimento'] = df['DataNascimento'].fillna('')
+            df['CPF'] = df['CPF'].fillna('')
+            df['Telefone'] = df['Telefone'].fillna('')
+
             return df
         else:
             return pd.DataFrame(columns=[
@@ -511,25 +520,29 @@ def carregar_agendamentos():
             df = pd.read_csv(ARQUIVO_AGENDAMENTOS)
             df['Data'] = pd.to_datetime(df['Data']).dt.date
             df['Hora'] = pd.to_datetime(df['Hora'], format='%H:%M:%S').dt.time
-            
+
             # Adicionar colunas novas se não existirem
             if 'Duracao' not in df.columns:
                 df['Duracao'] = '1h'
             if 'Recorrente' not in df.columns:
                 df['Recorrente'] = False
-            
+
+            # Preencher valores NaN em campos de texto
+            df['Observacoes'] = df['Observacoes'].fillna('')
+            df['Prontuario'] = df['Prontuario'].fillna('')
+
             return df
         else:
             return pd.DataFrame(columns=[
-                "ID", "Paciente", "Data", "Hora", "Duracao", "Servico", 
-                "Valor", "Desconto", "ValorFinal", "Pagamento", 
+                "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
+                "Valor", "Desconto", "ValorFinal", "Pagamento",
                 "Status", "Recorrente", "Observacoes", "Prontuario"
             ])
     except Exception as e:
         logger.error(f"Erro ao carregar agendamentos: {e}")
         return pd.DataFrame(columns=[
-            "ID", "Paciente", "Data", "Hora", "Duracao", "Servico", 
-            "Valor", "Desconto", "ValorFinal", "Pagamento", 
+            "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
+            "Valor", "Desconto", "ValorFinal", "Pagamento",
             "Status", "Recorrente", "Observacoes", "Prontuario"
         ])
 
@@ -1083,44 +1096,45 @@ elif menu == "📅 Agendamentos":
                         if pagamento == "PACOTE":
                             if not info_pacote or info_pacote['restantes'] <= 0:
                                 st.error("❌ Paciente não possui sessões disponíveis no pacote!")
-                            else:
-                                # Criar agendamento
-                                valor_final = valor_sessao * (1 - desconto / 100)
-                                
-                                novo_id = gerar_id_sequencial(st.session_state.agendamentos)
-                                novo_agendamento = pd.DataFrame([{
-                                    "ID": novo_id,
-                                    "Paciente": paciente_nome,
-                                    "Data": data_valida,
-                                    "Hora": hora_valida,
-                                    "Duracao": duracao,
-                                    "Servico": servico,
-                                    "Valor": valor_sessao,
-                                    "Desconto": desconto,
-                                    "ValorFinal": round(valor_final, 2),
-                                    "Pagamento": pagamento,
-                                    "Status": status,
-                                    "Recorrente": recorrente,
-                                    "Observacoes": observacoes,
-                                    "Prontuario": ""
-                                }])
-                                
-                                st.session_state.agendamentos = pd.concat(
-                                    [st.session_state.agendamentos, novo_agendamento],
-                                    ignore_index=True
-                                )
-                                
-                                salvar_agendamentos(st.session_state.agendamentos)
-                                registrar_historico(
-                                    "AGENDAMENTO_CRIADO",
-                                    f"ID {novo_id} - {paciente_nome} em {data_valida}"
-                                )
-                                
-                                st.success(f"✅ Agendamento confirmado! ID: {novo_id}")
-                                if recorrente:
-                                    st.info("🔄 Sessão recorrente ativada. Próxima sessão será criada automaticamente.")
-                                st.balloons()
-                                st.rerun()
+                                st.stop()
+
+                            # Criar agendamento com pacote
+                            valor_final = valor_sessao * (1 - desconto / 100)
+
+                            novo_id = gerar_id_sequencial(st.session_state.agendamentos)
+                            novo_agendamento = pd.DataFrame([{
+                                "ID": novo_id,
+                                "Paciente": paciente_nome,
+                                "Data": data_valida,
+                                "Hora": hora_valida,
+                                "Duracao": duracao,
+                                "Servico": servico,
+                                "Valor": valor_sessao,
+                                "Desconto": desconto,
+                                "ValorFinal": round(valor_final, 2),
+                                "Pagamento": pagamento,
+                                "Status": status,
+                                "Recorrente": recorrente,
+                                "Observacoes": observacoes,
+                                "Prontuario": ""
+                            }])
+
+                            st.session_state.agendamentos = pd.concat(
+                                [st.session_state.agendamentos, novo_agendamento],
+                                ignore_index=True
+                            )
+
+                            salvar_agendamentos(st.session_state.agendamentos)
+                            registrar_historico(
+                                "AGENDAMENTO_CRIADO",
+                                f"ID {novo_id} - {paciente_nome} em {data_valida}"
+                            )
+
+                            st.success(f"✅ Agendamento confirmado! ID: {novo_id}")
+                            if recorrente:
+                                st.info("🔄 Sessão recorrente ativada. Próxima sessão será criada automaticamente.")
+                            st.balloons()
+                            st.rerun()
                         else:
                             # Agendamento normal (sem pacote)
                             valor_final = valor_sessao * (1 - desconto / 100)
@@ -1241,7 +1255,7 @@ elif menu == "📅 Agendamentos":
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("📄 Exportar Agenda PDF", use_container_width=True):
+                if not df_filtrado.empty and st.button("📄 Exportar Agenda PDF", use_container_width=True):
                     pdf = gerar_agenda_pdf(
                         df_filtrado,
                         df_filtrado['Data'].min(),
@@ -1364,12 +1378,12 @@ elif menu == "📅 Agendamentos":
                     
                     novas_obs = st.text_area(
                         "Observações",
-                        value=ag['Observacoes']
+                        value=ag['Observacoes'] if pd.notna(ag['Observacoes']) else ""
                     )
-                    
+
                     prontuario = st.text_area(
                         "📋 Prontuário (Informações Clínicas)",
-                        value=ag['Prontuario'],
+                        value=ag['Prontuario'] if pd.notna(ag['Prontuario']) else "",
                         help="Campo confidencial para anotações clínicas"
                     )
                     
@@ -1555,17 +1569,19 @@ elif menu == "👤 Pacientes":
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.write(f"**Telefone:** {paciente['Telefone']}")
-                        st.write(f"**Email:** {paciente['Email']}")
-                        if paciente['DataNascimento']:
+                        if pd.notna(paciente['Telefone']) and str(paciente['Telefone']).strip():
+                            st.write(f"**Telefone:** {paciente['Telefone']}")
+                        if pd.notna(paciente['Email']) and str(paciente['Email']).strip():
+                            st.write(f"**Email:** {paciente['Email']}")
+                        if pd.notna(paciente['DataNascimento']) and str(paciente['DataNascimento']).strip():
                             st.write(f"**Data Nasc:** {paciente['DataNascimento']}")
-                    
+
                     with col2:
-                        if paciente['CPF']:
+                        if pd.notna(paciente['CPF']) and str(paciente['CPF']).strip():
                             st.write(f"**CPF:** {paciente['CPF']}")
                         st.write(f"**Cadastro:** {paciente['DataCadastro']}")
-                    
-                    if paciente['Observacoes']:
+
+                    if pd.notna(paciente['Observacoes']) and str(paciente['Observacoes']).strip():
                         st.write(f"**Observações:** {paciente['Observacoes']}")
                     
                     # Histórico de consultas
