@@ -436,7 +436,15 @@ OPCOES_STATUS = ["🔵 Agendado", "🟢 Confirmado", "✅ Realizado", "🟡 Rema
 OPCOES_PAGAMENTO = ["PAGO", "NÃO PAGO", "PACOTE", "GRATUITO", "INSTITUCIONAL"]
 OPCOES_DURACAO = ["1h", "2h"]
 OPCOES_TIPO_ATENDIMENTO = ["Regular", "Reposição"]
+OPCOES_MODALIDADE = ["Presencial", "Online"]
 VERSAO = "1.2"  # Atualizado com recursos de segurança
+
+# Dados do Profissional
+PSICOLOGO_NOME = "Radamés Emmanuel Souza Soares"
+PSICOLOGO_CRP = "19/5223"
+PSICOLOGO_TITULO = "Pós-graduado em Neuropsicologia"
+PSICOLOGO_INSTITUICAO = "IIEP – Instituto Israelita de Ensino e Pesquisa ALBERT Einstein – SP"
+PSICOLOGO_CONTATO = "79 99918-6852"
 
 # Configuração de Logging
 # Configuração de Logging Rotativo (não cresce infinitamente)
@@ -764,6 +772,7 @@ def criar_proximo_agendamento_recorrente(agendamento_atual):
             "Status": "🔵 Agendado",
             "Recorrente": True,
             "TipoAtendimento": "Regular",
+            "Modalidade": agendamento_atual.get('Modalidade', 'Presencial'),
             "Observacoes": agendamento_atual['Observacoes'],
             "Prontuario": ""
         }])
@@ -918,11 +927,14 @@ def carregar_agendamentos():
                 df['Recorrente'] = False
             if 'TipoAtendimento' not in df.columns:
                 df['TipoAtendimento'] = 'Regular'
+            if 'Modalidade' not in df.columns:
+                df['Modalidade'] = 'Presencial'
 
             # Preencher valores NaN em campos de texto
             df['Observacoes'] = df['Observacoes'].fillna('')
             df['Prontuario'] = df['Prontuario'].fillna('')
             df['TipoAtendimento'] = df['TipoAtendimento'].fillna('Regular')
+            df['Modalidade'] = df['Modalidade'].fillna('Presencial')
 
             # DESCRIPTOGRAFAR prontuários (dados clínicos sensíveis)
             if crypto_manager.enabled:
@@ -935,14 +947,14 @@ def carregar_agendamentos():
             return pd.DataFrame(columns=[
                 "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
                 "Valor", "Desconto", "ValorFinal", "Pagamento",
-                "Status", "Recorrente", "TipoAtendimento", "Observacoes", "Prontuario"
+                "Status", "Recorrente", "TipoAtendimento", "Modalidade", "Observacoes", "Prontuario"
             ])
     except Exception as e:
         logger.error(f"Erro ao carregar agendamentos: {crypto_manager.sanitize_log(str(e))}")
         return pd.DataFrame(columns=[
             "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
             "Valor", "Desconto", "ValorFinal", "Pagamento",
-            "Status", "Recorrente", "TipoAtendimento", "Observacoes", "Prontuario"
+            "Status", "Recorrente", "TipoAtendimento", "Modalidade", "Observacoes", "Prontuario"
         ])
 
 def salvar_agendamentos(df):
@@ -1470,6 +1482,7 @@ if menu == "📊 Dashboard":
                                 "Status": "🔵 Agendado",
                                 "Recorrente": False,
                                 "TipoAtendimento": "Reposição",
+                                "Modalidade": ag_origem.get('Modalidade', 'Presencial'),
                                 "Observacoes": f"Reposição de ID {st.session_state['reposicao_origem']}. {obs_reposicao}",
                                 "Prontuario": ""
                             }])
@@ -1715,12 +1728,23 @@ elif menu == "📅 Agendamentos":
                         index=OPCOES_PAGAMENTO.index(pagamento_default)
                     )
                 
-                status = st.selectbox(
-                    "📊 Status *",
-                    options=OPCOES_STATUS,
-                    index=0
-                )
-                
+                col_extra = st.columns(2)
+
+                with col_extra[0]:
+                    status = st.selectbox(
+                        "📊 Status *",
+                        options=OPCOES_STATUS,
+                        index=0
+                    )
+
+                with col_extra[1]:
+                    modalidade = st.selectbox(
+                        "📍 Modalidade *",
+                        options=OPCOES_MODALIDADE,
+                        index=0,  # Presencial como padrão
+                        help="Presencial ou Online"
+                    )
+
                 recorrente = st.checkbox(
                     "🔄 Sessão Recorrente",
                     help="Ao marcar como 'Realizado', cria automaticamente a próxima sessão na semana seguinte"
@@ -1776,6 +1800,7 @@ elif menu == "📅 Agendamentos":
                                 "Status": status,
                                 "Recorrente": recorrente,
                                 "TipoAtendimento": "Regular",
+                                "Modalidade": modalidade,
                                 "Observacoes": observacoes,
                                 "Prontuario": ""
                             }])
@@ -1815,6 +1840,7 @@ elif menu == "📅 Agendamentos":
                                 "Status": status,
                                 "Recorrente": recorrente,
                                 "TipoAtendimento": "Regular",
+                                "Modalidade": modalidade,
                                 "Observacoes": observacoes,
                                 "Prontuario": ""
                             }])
@@ -2963,7 +2989,102 @@ elif menu == "📈 Relatórios":
             st.bar_chart(servicos_count)
         
         st.divider()
-        
+
+        # Relatório Individual por Paciente
+        st.subheader("📄 Relatório de Atendimentos por Paciente")
+
+        # Seleção de paciente
+        col_pac1, col_pac2 = st.columns([2, 1])
+
+        with col_pac1:
+            if not st.session_state.pacientes.empty:
+                paciente_relatorio = st.selectbox(
+                    "Selecione o paciente:",
+                    options=["-- Selecione --"] + sorted(st.session_state.pacientes['Nome'].unique()),
+                    key="paciente_relatorio"
+                )
+            else:
+                st.info("Nenhum paciente cadastrado.")
+                paciente_relatorio = None
+
+        with col_pac2:
+            tipo_relatorio = st.radio(
+                "Tipo de relatório:",
+                ["Geral", "Mensal"],
+                horizontal=True
+            )
+
+        if paciente_relatorio and paciente_relatorio != "-- Selecione --":
+            # Filtrar atendimentos do paciente
+            atend_paciente = st.session_state.agendamentos[
+                st.session_state.agendamentos['Paciente'] == paciente_relatorio
+            ].copy()
+
+            if tipo_relatorio == "Mensal":
+                # Agrupar por mês
+                atend_paciente['Mes'] = pd.to_datetime(atend_paciente['Data']).dt.to_period('M')
+
+                meses_disponiveis = sorted(atend_paciente['Mes'].unique(), reverse=True)
+
+                if meses_disponiveis:
+                    mes_selecionado = st.selectbox(
+                        "Selecione o mês:",
+                        options=meses_disponiveis,
+                        format_func=lambda x: x.strftime("%B/%Y").capitalize()
+                    )
+
+                    atend_paciente = atend_paciente[atend_paciente['Mes'] == mes_selecionado]
+                    periodo_texto = mes_selecionado.strftime("%B/%Y").capitalize()
+                else:
+                    st.info(f"Nenhum atendimento registrado para {paciente_relatorio}")
+                    atend_paciente = pd.DataFrame()
+                    periodo_texto = ""
+            else:
+                periodo_texto = "Geral (todos os períodos)"
+
+            if not atend_paciente.empty:
+                st.write(f"**Período:** {periodo_texto}")
+                st.write(f"**Total de atendimentos:** {len(atend_paciente)}")
+
+                # Métricas do paciente
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+                with col_m1:
+                    realizados_pac = len(atend_paciente[atend_paciente['Status'] == '✅ Realizado'])
+                    st.metric("✅ Realizados", realizados_pac)
+
+                with col_m2:
+                    agendados_pac = len(atend_paciente[atend_paciente['Status'].isin(['🔵 Agendado', '🟢 Confirmado'])])
+                    st.metric("📅 Agendados", agendados_pac)
+
+                with col_m3:
+                    cancelados_pac = len(atend_paciente[atend_paciente['Status'] == '🔴 Cancelado'])
+                    st.metric("🔴 Cancelados", cancelados_pac)
+
+                with col_m4:
+                    faltas_pac = len(atend_paciente[atend_paciente['Status'] == '⚫ Faltou'])
+                    st.metric("⚫ Faltas", faltas_pac)
+
+                # Detalhamento
+                st.write("**Detalhamento dos atendimentos:**")
+
+                df_pac_show = atend_paciente[[
+                    'Data', 'Hora', 'Servico', 'Modalidade', 'Status', 'TipoAtendimento'
+                ]].copy()
+
+                df_pac_show['Data'] = df_pac_show['Data'].apply(lambda x: formatar_data_com_dia_semana(x))
+                df_pac_show['Hora'] = df_pac_show['Hora'].apply(lambda x: x.strftime('%H:%M'))
+                df_pac_show = df_pac_show.sort_values('Data', ascending=False)
+
+                st.dataframe(df_pac_show, use_container_width=True, hide_index=True)
+
+                # Botão para gerar declaração de atendimento
+                if st.button("📄 Gerar Declaração de Atendimento", use_container_width=True, type="primary"):
+                    # Placeholder para implementar declaração CFP
+                    st.info("🚧 Funcionalidade de Declaração CFP em implementação...")
+
+        st.divider()
+
         # Top pacientes
         st.subheader("👥 Top 10 Pacientes")
         top_pacientes = df_rel['Paciente'].value_counts().head(10)
