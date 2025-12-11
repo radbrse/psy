@@ -455,6 +455,11 @@ PSICOLOGO_TITULO = "Pós-graduado em Neuropsicologia"
 PSICOLOGO_INSTITUICAO = "IIEP – Instituto Israelita de Ensino e Pesquisa ALBERT Einstein – SP"
 PSICOLOGO_CONTATO = "79 99918-6852"
 
+# Configurações de Sincronização Automática
+SYNC_AUTO_ENABLED_DEFAULT = False  # Desabilitado por padrão
+SYNC_AUTO_INTERVAL_DEFAULT = 30  # 30 minutos
+SYNC_ON_SAVE_DEFAULT = True  # Sincronizar ao salvar dados
+
 # Configuração de Logging
 # Configuração de Logging Rotativo (não cresce infinitamente)
 logger = logging.getLogger("agenda_psi")
@@ -907,6 +912,8 @@ def salvar_pacientes(df):
 
         if sucesso:
             logger.info("Pacientes salvos com sucesso")
+            # Sincronizar automaticamente se configurado
+            sincronizar_ao_salvar()
         return sucesso
 
     except Exception as e:
@@ -993,6 +1000,8 @@ def salvar_agendamentos(df):
 
         if sucesso:
             logger.info("Agendamentos salvos com sucesso")
+            # Sincronizar automaticamente se configurado
+            sincronizar_ao_salvar()
         return sucesso
 
     except Exception as e:
@@ -1026,6 +1035,8 @@ def salvar_pacotes(df):
         df_save['DataCompra'] = pd.to_datetime(df_save['DataCompra']).dt.strftime('%Y-%m-%d')
         df_save['Validade'] = pd.to_datetime(df_save['Validade']).dt.strftime('%Y-%m-%d')
         df_save.to_csv(ARQUIVO_PACOTES, index=False)
+        # Sincronizar automaticamente se configurado
+        sincronizar_ao_salvar()
         return True
     except Exception as e:
         logger.error(f"Erro ao salvar pacotes: {e}")
@@ -1282,6 +1293,94 @@ def restaurar_de_google_sheets(spreadsheet_id=None):
         error_msg = f"Erro na restauração: {str(e)}"
         logger.error(error_msg)
         return False, error_msg
+
+def inicializar_config_sync():
+    """Inicializa configurações de sincronização automática no session_state."""
+    if 'sync_auto_enabled' not in st.session_state:
+        st.session_state.sync_auto_enabled = SYNC_AUTO_ENABLED_DEFAULT
+
+    if 'sync_auto_interval' not in st.session_state:
+        st.session_state.sync_auto_interval = SYNC_AUTO_INTERVAL_DEFAULT
+
+    if 'sync_on_save' not in st.session_state:
+        st.session_state.sync_on_save = SYNC_ON_SAVE_DEFAULT
+
+    if 'ultima_sincronizacao_auto' not in st.session_state:
+        st.session_state.ultima_sincronizacao_auto = None
+
+    if 'sync_auto_status' not in st.session_state:
+        st.session_state.sync_auto_status = ""
+
+def verificar_e_sincronizar_auto():
+    """
+    Verifica se é hora de fazer sincronização automática periódica.
+    Retorna True se sincronizou, False caso contrário.
+    """
+    if not GSHEETS_AVAILABLE:
+        return False
+
+    if not st.session_state.get('sync_auto_enabled', False):
+        return False
+
+    # Verificar se tem credenciais configuradas
+    has_creds = "gcp_service_account" in st.secrets or "GOOGLE_CREDENTIALS" in os.environ
+    has_sheet_id = "google_sheets_id" in st.secrets
+
+    if not (has_creds and has_sheet_id):
+        return False
+
+    # Verificar se já passou o intervalo
+    agora = agora_brasil()
+    ultima_sync = st.session_state.get('ultima_sincronizacao_auto')
+    intervalo_minutos = st.session_state.get('sync_auto_interval', SYNC_AUTO_INTERVAL_DEFAULT)
+
+    if ultima_sync is None:
+        # Primeira sincronização
+        sucesso, msg = sincronizar_para_google_sheets()
+        if sucesso:
+            st.session_state.ultima_sincronizacao_auto = agora
+            st.session_state.sync_auto_status = f"✅ Última sync: {agora.strftime('%d/%m/%Y %H:%M')}"
+        return sucesso
+
+    # Calcular tempo desde última sincronização
+    tempo_decorrido = (agora - ultima_sync).total_seconds() / 60  # em minutos
+
+    if tempo_decorrido >= intervalo_minutos:
+        sucesso, msg = sincronizar_para_google_sheets()
+        if sucesso:
+            st.session_state.ultima_sincronizacao_auto = agora
+            st.session_state.sync_auto_status = f"✅ Última sync: {agora.strftime('%d/%m/%Y %H:%M')}"
+        else:
+            st.session_state.sync_auto_status = f"❌ Erro: {msg[:50]}..."
+        return sucesso
+
+    return False
+
+def sincronizar_ao_salvar():
+    """
+    Sincroniza após salvar dados (se configurado).
+    Executa de forma silenciosa, apenas registra no log.
+    """
+    if not GSHEETS_AVAILABLE:
+        return
+
+    if not st.session_state.get('sync_on_save', False):
+        return
+
+    # Verificar configurações
+    has_creds = "gcp_service_account" in st.secrets or "GOOGLE_CREDENTIALS" in os.environ
+    has_sheet_id = "google_sheets_id" in st.secrets
+
+    if not (has_creds and has_sheet_id):
+        return
+
+    # Sincronizar silenciosamente
+    try:
+        sucesso, msg = sincronizar_para_google_sheets()
+        if sucesso:
+            st.session_state.sync_auto_status = f"✅ Sync ao salvar: {agora_brasil().strftime('%H:%M')}"
+    except Exception as e:
+        logger.error(f"Erro na sincronização ao salvar: {e}")
 
 # ==============================================================================
 # FUNÇÕES DE GERAÇÃO DE PDF
@@ -1670,6 +1769,13 @@ if 'agendamentos' not in st.session_state:
 
 if 'pacotes' not in st.session_state:
     st.session_state.pacotes = carregar_pacotes()
+
+# Inicializar configurações de sincronização automática
+inicializar_config_sync()
+
+# Verificar sincronização automática periódica (se habilitada)
+if GSHEETS_AVAILABLE:
+    verificar_e_sincronizar_auto()
 
 # ==============================================================================
 # INTERFACE - SIDEBAR
@@ -3952,6 +4058,70 @@ elif menu == "🛠️ Manutenção":
                             st.info("🔄 Recarregue a página para ver os dados atualizados")
                         else:
                             st.error(f"❌ {mensagem}")
+
+            st.divider()
+
+            # Configurações de Sincronização Automática
+            st.write("**⚙️ Sincronização Automática:**")
+
+            col_auto1, col_auto2 = st.columns(2)
+
+            with col_auto1:
+                st.write("**🔄 Sincronização Periódica**")
+                st.caption("Sincroniza automaticamente em intervalos regulares")
+
+                sync_auto_enabled = st.checkbox(
+                    "Habilitar sincronização periódica",
+                    value=st.session_state.get('sync_auto_enabled', False),
+                    key="sync_auto_enabled_checkbox",
+                    disabled=not (has_creds and has_sheet_id)
+                )
+
+                if sync_auto_enabled != st.session_state.get('sync_auto_enabled', False):
+                    st.session_state.sync_auto_enabled = sync_auto_enabled
+                    st.rerun()
+
+                if sync_auto_enabled:
+                    intervalo = st.slider(
+                        "Intervalo (minutos):",
+                        min_value=5,
+                        max_value=120,
+                        value=st.session_state.get('sync_auto_interval', SYNC_AUTO_INTERVAL_DEFAULT),
+                        step=5,
+                        key="sync_auto_interval_slider",
+                        help="Define o intervalo entre sincronizações automáticas"
+                    )
+
+                    if intervalo != st.session_state.get('sync_auto_interval', SYNC_AUTO_INTERVAL_DEFAULT):
+                        st.session_state.sync_auto_interval = intervalo
+                        st.rerun()
+
+                    st.caption(f"⏱️ Próxima sincronização em até {intervalo} minutos")
+
+            with col_auto2:
+                st.write("**💾 Sincronização ao Salvar**")
+                st.caption("Sincroniza automaticamente após salvar dados")
+
+                sync_on_save = st.checkbox(
+                    "Habilitar sincronização ao salvar",
+                    value=st.session_state.get('sync_on_save', SYNC_ON_SAVE_DEFAULT),
+                    key="sync_on_save_checkbox",
+                    disabled=not (has_creds and has_sheet_id)
+                )
+
+                if sync_on_save != st.session_state.get('sync_on_save', SYNC_ON_SAVE_DEFAULT):
+                    st.session_state.sync_on_save = sync_on_save
+                    st.rerun()
+
+                if sync_on_save:
+                    st.caption("✅ Backup em nuvem sempre atualizado")
+
+            # Status da última sincronização automática
+            if st.session_state.get('sync_auto_status'):
+                st.info(st.session_state.sync_auto_status)
+
+            if sync_auto_enabled or sync_on_save:
+                st.success("✅ Sincronização automática ativa")
 
             st.divider()
 
