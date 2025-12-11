@@ -1180,9 +1180,11 @@ def gerar_recibo_pdf(agendamento):
             alignment=1,
             spaceAfter=5
         )
-        elements.append(Paragraph("<b>Psi. Radamés Soares</b>", header_style))
-        elements.append(Paragraph("CRP 19/5223", header_style))
+        elements.append(Paragraph(f"<b>{PSICOLOGO_NOME}</b>", header_style))
+        elements.append(Paragraph(f"CRP {PSICOLOGO_CRP}", header_style))
+        elements.append(Paragraph(f"{PSICOLOGO_TITULO}", header_style))
         elements.append(Paragraph("Aracaju-SE", header_style))
+        elements.append(Paragraph(f"Contato: {PSICOLOGO_CONTATO}", header_style))
         elements.append(Spacer(1, 0.5*cm))
         
         # Título
@@ -1229,14 +1231,205 @@ def gerar_recibo_pdf(agendamento):
         elements.append(Spacer(1, 2*cm))
         elements.append(Paragraph(f"Aracaju-SE, {agora_brasil().strftime('%d/%m/%Y')}", info_style))
         elements.append(Spacer(1, 1.5*cm))
-        elements.append(Paragraph("_" * 50, info_style))
-        elements.append(Paragraph("Psi. Radamés Soares - CRP 19/5223", info_style))
+
+        # Linha de assinatura
+        sig_style = ParagraphStyle(
+            'Signature',
+            parent=styles['Normal'],
+            alignment=1,
+            fontSize=10
+        )
+        elements.append(Paragraph("_" * 50, sig_style))
+        elements.append(Paragraph(f"{PSICOLOGO_NOME}", sig_style))
+        elements.append(Paragraph(f"CRP {PSICOLOGO_CRP}", sig_style))
         
         doc.build(elements)
         buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
         logger.error(f"Erro ao gerar recibo: {e}")
+        return None
+
+def gerar_declaracao_atendimento_pdf(paciente_nome, atendimentos_df):
+    """
+    Gera declaração de atendimento conforme normas do CFP.
+
+    Resolução CFP nº 015/1996 - Documentos psicológicos
+    Atualizada pela Resolução CFP nº 006/2019
+    """
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=3*cm)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        # Adicionar logo se existir
+        logo_paths = ["logo.png", "assets/logo.png", "./logo.png"]
+        for logo_path in logo_paths:
+            if os.path.exists(logo_path):
+                try:
+                    logo = Image(logo_path, width=3*cm, height=3*cm)
+                    elements.append(logo)
+                    elements.append(Spacer(1, 0.3*cm))
+                    break
+                except:
+                    continue
+
+        # Cabeçalho profissional
+        header_style = ParagraphStyle(
+            'Header',
+            parent=styles['Normal'],
+            fontSize=11,
+            textColor=colors.HexColor('#2C5F7C'),
+            alignment=1,
+            spaceAfter=3
+        )
+        elements.append(Paragraph(f"<b>{PSICOLOGO_NOME}</b>", header_style))
+        elements.append(Paragraph(f"Psicólogo - CRP {PSICOLOGO_CRP}", header_style))
+        elements.append(Paragraph(f"{PSICOLOGO_TITULO}", header_style))
+        elements.append(Paragraph(f"{PSICOLOGO_INSTITUICAO}", header_style))
+        elements.append(Paragraph(f"Contato: {PSICOLOGO_CONTATO}", header_style))
+        elements.append(Spacer(1, 1*cm))
+
+        # Título
+        titulo_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Title'],
+            fontSize=18,
+            textColor=colors.HexColor('#2C5F7C'),
+            spaceAfter=20,
+            alignment=1
+        )
+        elements.append(Paragraph("DECLARAÇÃO DE ATENDIMENTO PSICOLÓGICO", titulo_style))
+        elements.append(Spacer(1, 1*cm))
+
+        # Corpo da declaração
+        corpo_style = ParagraphStyle(
+            'CorpoDeclaracao',
+            parent=styles['Normal'],
+            fontSize=12,
+            alignment=4,  # Justificado
+            spaceAfter=10,
+            leading=18
+        )
+
+        # Texto conforme CFP
+        texto_declaracao = f"""
+        Declaro, para os devidos fins, que <b>{paciente_nome}</b> está em acompanhamento
+        psicológico comigo desde {atendimentos_df.iloc[-1]['Data'].strftime('%d/%m/%Y')},
+        com sessões regulares conforme especificado abaixo.
+        """
+
+        elements.append(Paragraph(texto_declaracao, corpo_style))
+        elements.append(Spacer(1, 0.8*cm))
+
+        # Detalhamento dos atendimentos
+        elements.append(Paragraph("<b>Detalhamento dos Atendimentos:</b>", corpo_style))
+        elements.append(Spacer(1, 0.5*cm))
+
+        # Tabela de atendimentos
+        atend_realizados = atendimentos_df[atendimentos_df['Status'] == '✅ Realizado'].copy()
+        atend_realizados = atend_realizados.sort_values('Data')
+
+        # Preparar dados para tabela
+        table_data = [['Data', 'Horário', 'Modalidade', 'Tipo']]
+
+        for _, atend in atend_realizados.iterrows():
+            table_data.append([
+                atend['Data'].strftime('%d/%m/%Y'),
+                atend['Hora'].strftime('%H:%M'),
+                atend.get('Modalidade', 'Presencial'),
+                atend.get('TipoAtendimento', 'Regular')
+            ])
+
+        # Criar tabela
+        table = Table(table_data, colWidths=[3*cm, 2.5*cm, 3*cm, 3*cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2C5F7C')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ]))
+
+        elements.append(table)
+        elements.append(Spacer(1, 1*cm))
+
+        # Resumo
+        total_atendimentos = len(atend_realizados)
+        resumo_style = ParagraphStyle(
+            'Resumo',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=8
+        )
+
+        elements.append(Paragraph(f"<b>Total de atendimentos realizados:</b> {total_atendimentos}", resumo_style))
+        elements.append(Paragraph(
+            f"<b>Período:</b> {atend_realizados.iloc[0]['Data'].strftime('%d/%m/%Y')} a "
+            f"{atend_realizados.iloc[-1]['Data'].strftime('%d/%m/%Y')}",
+            resumo_style
+        ))
+        elements.append(Spacer(1, 1*cm))
+
+        # Observações CFP
+        obs_style = ParagraphStyle(
+            'Observacao',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor=colors.grey,
+            alignment=4,
+            spaceAfter=8
+        )
+
+        elements.append(Paragraph(
+            "<i>Esta declaração é emitida em conformidade com a Resolução CFP nº 015/1996, "
+            "que institui e regulamenta a Declaração de Comparecimento de Pacientes/Clientes "
+            "a Consultório/Serviço de Psicologia.</i>",
+            obs_style
+        ))
+
+        elements.append(Spacer(1, 1.5*cm))
+
+        # Data e local
+        elements.append(Paragraph(f"Aracaju-SE, {agora_brasil().strftime('%d de %B de %Y')}", resumo_style))
+        elements.append(Spacer(1, 2*cm))
+
+        # Linha de assinatura
+        sig_style = ParagraphStyle(
+            'Signature',
+            parent=styles['Normal'],
+            alignment=1,
+            fontSize=10
+        )
+        elements.append(Paragraph("_" * 60, sig_style))
+        elements.append(Paragraph(f"<b>{PSICOLOGO_NOME}</b>", sig_style))
+        elements.append(Paragraph(f"Psicólogo - CRP {PSICOLOGO_CRP}", sig_style))
+        elements.append(Paragraph(f"{PSICOLOGO_TITULO}", sig_style))
+
+        # Rodapé com informações CFP
+        rodape_style = ParagraphStyle(
+            'Rodape',
+            parent=styles['Normal'],
+            fontSize=8,
+            textColor=colors.grey,
+            alignment=1
+        )
+        elements.append(Spacer(1, 1*cm))
+        elements.append(Paragraph(
+            "Documento emitido digitalmente - Válido sem assinatura física conforme Lei nº 14.063/2020",
+            rodape_style
+        ))
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.error(f"Erro ao gerar declaração: {e}")
         return None
 
 # ==============================================================================
@@ -3080,8 +3273,24 @@ elif menu == "📈 Relatórios":
 
                 # Botão para gerar declaração de atendimento
                 if st.button("📄 Gerar Declaração de Atendimento", use_container_width=True, type="primary"):
-                    # Placeholder para implementar declaração CFP
-                    st.info("🚧 Funcionalidade de Declaração CFP em implementação...")
+                    # Filtrar apenas atendimentos realizados
+                    atend_realizados = atend_paciente[atend_paciente['Status'] == '✅ Realizado']
+
+                    if len(atend_realizados) == 0:
+                        st.warning("⚠️ Nenhum atendimento realizado para gerar declaração.")
+                    else:
+                        pdf_declaracao = gerar_declaracao_atendimento_pdf(paciente_relatorio, atend_realizados)
+
+                        if pdf_declaracao:
+                            st.download_button(
+                                "⬇️ Baixar Declaração de Atendimento",
+                                pdf_declaracao,
+                                f"declaracao_atendimento_{paciente_relatorio.replace(' ', '_')}_{agora_brasil().strftime('%Y%m%d')}.pdf",
+                                "application/pdf",
+                                use_container_width=True
+                            )
+                        else:
+                            st.error("❌ Erro ao gerar declaração")
 
         st.divider()
 
