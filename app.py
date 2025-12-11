@@ -39,6 +39,15 @@ except ImportError:
     LOCK_AVAILABLE = False
     print("⚠️ File locking não disponível. Instale: pip install portalocker")
 
+# Importações Google Sheets
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSHEETS_AVAILABLE = True
+except ImportError:
+    GSHEETS_AVAILABLE = False
+    print("⚠️ Google Sheets não disponível. Instale: pip install gspread google-auth")
+
 # --- CONFIGURAÇÃO DE FUSO HORÁRIO (BRASIL) ---
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
 
@@ -1055,6 +1064,224 @@ def registrar_historico(acao, detalhes):
         # Sanitizar erro também
         error_msg = crypto_manager.sanitize_log(str(e))
         logger.error(f"Erro ao registrar histórico: {error_msg}")
+
+# ==============================================================================
+# FUNÇÕES DE INTEGRAÇÃO GOOGLE SHEETS
+# ==============================================================================
+def conectar_google_sheets():
+    """
+    Conecta ao Google Sheets usando credenciais de service account.
+
+    Credenciais devem estar em:
+    - st.secrets["gcp_service_account"] (dict JSON)
+    - ou variável de ambiente GOOGLE_CREDENTIALS (string JSON)
+    """
+    if not GSHEETS_AVAILABLE:
+        return None, "Google Sheets não disponível. Instale: pip install gspread google-auth"
+
+    try:
+        # Tentar obter credenciais do secrets.toml
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+        elif "GOOGLE_CREDENTIALS" in os.environ:
+            import json
+            creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+        else:
+            return None, "Credenciais Google não configuradas. Configure em .streamlit/secrets.toml"
+
+        # Definir escopos necessários
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+
+        # Criar credenciais
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+
+        # Autorizar cliente gspread
+        client = gspread.authorize(credentials)
+
+        return client, None
+    except Exception as e:
+        error_msg = f"Erro ao conectar Google Sheets: {str(e)}"
+        logger.error(error_msg)
+        return None, error_msg
+
+def sincronizar_para_google_sheets(spreadsheet_id=None):
+    """
+    Sincroniza dados locais para Google Sheets (backup).
+
+    Cria/atualiza planilha com 4 abas:
+    - Pacientes
+    - Agendamentos
+    - Pacotes
+    - Histórico
+    """
+    try:
+        # Conectar
+        client, erro = conectar_google_sheets()
+        if erro:
+            return False, erro
+
+        # Obter ID da planilha (do secrets ou parâmetro)
+        if not spreadsheet_id:
+            spreadsheet_id = st.secrets.get("google_sheets_id", None)
+
+        if not spreadsheet_id:
+            return False, "ID da planilha não configurado. Configure google_sheets_id em secrets.toml"
+
+        # Abrir planilha
+        try:
+            spreadsheet = client.open_by_key(spreadsheet_id)
+        except:
+            return False, f"Planilha não encontrada. Verifique o ID: {spreadsheet_id}"
+
+        # Carregar dados locais
+        df_pacientes = carregar_pacientes()
+        df_agendamentos = carregar_agendamentos()
+        df_pacotes = carregar_pacotes()
+
+        # Função auxiliar para atualizar/criar aba
+        def atualizar_aba(nome_aba, df):
+            try:
+                worksheet = spreadsheet.worksheet(nome_aba)
+            except:
+                worksheet = spreadsheet.add_worksheet(title=nome_aba, rows="1000", cols="20")
+
+            # Converter DataFrame para lista de listas
+            df_export = df.copy()
+
+            # Converter datas para string
+            for col in df_export.columns:
+                if df_export[col].dtype == 'object':
+                    # Tentar converter datetime
+                    try:
+                        if isinstance(df_export[col].iloc[0], (date, datetime)):
+                            df_export[col] = df_export[col].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else '')
+                    except:
+                        pass
+                elif 'datetime' in str(df_export[col].dtype):
+                    df_export[col] = pd.to_datetime(df_export[col]).dt.strftime('%Y-%m-%d')
+
+            # Converter time para string
+            for col in df_export.columns:
+                if df_export[col].dtype == 'object':
+                    try:
+                        if isinstance(df_export[col].iloc[0], time):
+                            df_export[col] = df_export[col].apply(lambda x: x.strftime('%H:%M:%S') if pd.notna(x) else '')
+                    except:
+                        pass
+
+            # Preparar dados
+            data = [df_export.columns.tolist()] + df_export.fillna('').values.tolist()
+
+            # Atualizar aba
+            worksheet.clear()
+            worksheet.update('A1', data)
+
+        # Sincronizar cada aba
+        atualizar_aba("Pacientes", df_pacientes)
+        atualizar_aba("Agendamentos", df_agendamentos)
+        atualizar_aba("Pacotes", df_pacotes)
+
+        # Histórico (se existir)
+        if os.path.exists(ARQUIVO_HISTORICO):
+            df_hist = pd.read_csv(ARQUIVO_HISTORICO)
+            atualizar_aba("Historico", df_hist)
+
+        # Adicionar metadados
+        try:
+            worksheet_info = spreadsheet.worksheet("Info")
+        except:
+            worksheet_info = spreadsheet.add_worksheet(title="Info", rows="10", cols="2")
+
+        info_data = [
+            ["Última Sincronização", agora_brasil().strftime('%Y-%m-%d %H:%M:%S')],
+            ["Total Pacientes", len(df_pacientes)],
+            ["Total Agendamentos", len(df_agendamentos)],
+            ["Total Pacotes", len(df_pacotes)]
+        ]
+        worksheet_info.clear()
+        worksheet_info.update('A1', info_data)
+
+        return True, "Sincronização concluída com sucesso"
+
+    except Exception as e:
+        error_msg = f"Erro na sincronização: {str(e)}"
+        logger.error(error_msg)
+        return False, error_msg
+
+def restaurar_de_google_sheets(spreadsheet_id=None):
+    """
+    Restaura dados do Google Sheets para arquivos locais.
+
+    ATENÇÃO: Sobrescreve dados locais!
+    """
+    try:
+        # Conectar
+        client, erro = conectar_google_sheets()
+        if erro:
+            return False, erro
+
+        # Obter ID da planilha
+        if not spreadsheet_id:
+            spreadsheet_id = st.secrets.get("google_sheets_id", None)
+
+        if not spreadsheet_id:
+            return False, "ID da planilha não configurado"
+
+        # Abrir planilha
+        spreadsheet = client.open_by_key(spreadsheet_id)
+
+        # Fazer backup dos arquivos locais antes de sobrescrever
+        for arquivo in FILES_TO_BACKUP:
+            if os.path.exists(arquivo):
+                create_backup(arquivo, max_backups=5)
+
+        # Função auxiliar para ler aba
+        def ler_aba(nome_aba):
+            try:
+                worksheet = spreadsheet.worksheet(nome_aba)
+                data = worksheet.get_all_values()
+
+                if len(data) < 2:
+                    return pd.DataFrame()
+
+                # Primeira linha são headers
+                df = pd.DataFrame(data[1:], columns=data[0])
+                return df
+            except Exception as e:
+                logger.error(f"Erro ao ler aba {nome_aba}: {e}")
+                return pd.DataFrame()
+
+        # Restaurar cada arquivo
+        df_pacientes = ler_aba("Pacientes")
+        if not df_pacientes.empty:
+            df_pacientes.to_csv(ARQUIVO_PACIENTES, index=False)
+
+        df_agendamentos = ler_aba("Agendamentos")
+        if not df_agendamentos.empty:
+            df_agendamentos.to_csv(ARQUIVO_AGENDAMENTOS, index=False)
+
+        df_pacotes = ler_aba("Pacotes")
+        if not df_pacotes.empty:
+            df_pacotes.to_csv(ARQUIVO_PACOTES, index=False)
+
+        df_hist = ler_aba("Historico")
+        if not df_hist.empty:
+            df_hist.to_csv(ARQUIVO_HISTORICO, index=False)
+
+        # Recarregar session state
+        st.session_state.pacientes = carregar_pacientes()
+        st.session_state.agendamentos = carregar_agendamentos()
+        st.session_state.pacotes = carregar_pacotes()
+
+        return True, "Restauração concluída com sucesso"
+
+    except Exception as e:
+        error_msg = f"Erro na restauração: {str(e)}"
+        logger.error(error_msg)
+        return False, error_msg
 
 # ==============================================================================
 # FUNÇÕES DE GERAÇÃO DE PDF
@@ -3325,7 +3552,7 @@ elif menu == "📈 Relatórios":
 elif menu == "🛠️ Manutenção":
     st.title("🛠️ Manutenção do Sistema")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Logs", "📜 Histórico", "💾 Backups", "⚙️ Configurações"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Logs", "📜 Histórico", "💾 Backups", "☁️ Google Sheets", "⚙️ Configurações"])
     
     # --- TAB 1: LOGS ---
     with tab1:
@@ -3633,8 +3860,179 @@ elif menu == "🛠️ Manutenção":
             st.write("- ✅ Formato: `arquivo.csv.bak.YYYYMMDD_HHMMSS`")
             st.write("- ✅ Podem ser restaurados a qualquer momento nesta aba")
 
-    # --- TAB 4: CONFIGURAÇÕES ---
+    # --- TAB 4: GOOGLE SHEETS ---
     with tab4:
+        st.subheader("☁️ Integração Google Sheets")
+
+        if not GSHEETS_AVAILABLE:
+            st.error("❌ Google Sheets não disponível")
+            st.info("Instale as bibliotecas necessárias: `pip install gspread google-auth`")
+        else:
+            st.info("💡 Sincronize seus dados com Google Sheets para backup em nuvem e acesso de qualquer lugar")
+
+            # Status da conexão
+            st.write("**📡 Status da Conexão:**")
+
+            # Verificar se está configurado
+            has_creds = "gcp_service_account" in st.secrets or "GOOGLE_CREDENTIALS" in os.environ
+            has_sheet_id = "google_sheets_id" in st.secrets
+
+            col_status1, col_status2 = st.columns(2)
+
+            with col_status1:
+                if has_creds:
+                    st.success("✅ Credenciais configuradas")
+                else:
+                    st.warning("⚠️ Credenciais não configuradas")
+
+            with col_status2:
+                if has_sheet_id:
+                    sheet_id = st.secrets.get("google_sheets_id", "")
+                    st.success(f"✅ Planilha: {sheet_id[:20]}...")
+                else:
+                    st.warning("⚠️ ID da planilha não configurado")
+
+            st.divider()
+
+            # Testar conexão
+            st.write("**🔍 Testar Conexão:**")
+            if st.button("🧪 Testar Conexão com Google Sheets", use_container_width=True):
+                with st.spinner("Testando conexão..."):
+                    client, erro = conectar_google_sheets()
+
+                    if erro:
+                        st.error(f"❌ {erro}")
+                    else:
+                        st.success("✅ Conexão estabelecida com sucesso!")
+
+                        # Tentar acessar a planilha
+                        if has_sheet_id:
+                            try:
+                                sheet_id = st.secrets["google_sheets_id"]
+                                spreadsheet = client.open_by_key(sheet_id)
+                                st.success(f"✅ Planilha acessada: **{spreadsheet.title}**")
+                                st.info(f"📊 Abas disponíveis: {', '.join([ws.title for ws.worksheet in spreadsheet.worksheets()])}")
+                            except Exception as e:
+                                st.error(f"❌ Erro ao acessar planilha: {str(e)}")
+
+            st.divider()
+
+            # Sincronização
+            st.write("**☁️ Sincronização:**")
+
+            col_sync1, col_sync2 = st.columns(2)
+
+            with col_sync1:
+                st.write("**📤 Enviar dados para Google Sheets**")
+                st.caption("Faz backup dos dados locais na planilha")
+
+                if st.button("📤 Sincronizar para Google Sheets", use_container_width=True, type="primary", disabled=not (has_creds and has_sheet_id)):
+                    with st.spinner("Sincronizando..."):
+                        sucesso, mensagem = sincronizar_para_google_sheets()
+
+                        if sucesso:
+                            st.success(f"✅ {mensagem}")
+                            registrar_historico("GOOGLE_SHEETS_SYNC", "Dados sincronizados para Google Sheets")
+                        else:
+                            st.error(f"❌ {mensagem}")
+
+            with col_sync2:
+                st.write("**📥 Restaurar do Google Sheets**")
+                st.caption("⚠️ Sobrescreve dados locais!")
+
+                confirmar_restaurar = st.checkbox("✅ Confirmo que quero restaurar", key="confirm_restore_gsheets")
+
+                if st.button("📥 Restaurar de Google Sheets", use_container_width=True, type="secondary", disabled=not (has_creds and has_sheet_id and confirmar_restaurar)):
+                    with st.spinner("Restaurando..."):
+                        sucesso, mensagem = restaurar_de_google_sheets()
+
+                        if sucesso:
+                            st.success(f"✅ {mensagem}")
+                            registrar_historico("GOOGLE_SHEETS_RESTORE", "Dados restaurados do Google Sheets")
+                            st.info("🔄 Recarregue a página para ver os dados atualizados")
+                        else:
+                            st.error(f"❌ {mensagem}")
+
+            st.divider()
+
+            # Instruções de configuração
+            st.write("**📖 Como Configurar:**")
+
+            with st.expander("📘 Ver Tutorial Completo de Configuração"):
+                st.markdown("""
+                ### Passo 1: Criar Service Account no Google Cloud
+
+                1. Acesse [Google Cloud Console](https://console.cloud.google.com/)
+                2. Crie um novo projeto ou selecione um existente
+                3. Ative a **Google Sheets API** e **Google Drive API**
+                4. Vá em **IAM & Admin** → **Service Accounts**
+                5. Clique em **Create Service Account**
+                6. Dê um nome (ex: "streamlit-app")
+                7. Clique em **Create and Continue**
+                8. Pule a atribuição de funções (opcional)
+                9. Clique em **Done**
+
+                ### Passo 2: Criar Chave JSON
+
+                1. Clique na service account criada
+                2. Vá na aba **Keys**
+                3. Clique em **Add Key** → **Create new key**
+                4. Selecione **JSON**
+                5. Faça download do arquivo JSON
+
+                ### Passo 3: Criar Planilha Google Sheets
+
+                1. Acesse [Google Sheets](https://sheets.google.com/)
+                2. Crie uma nova planilha
+                3. Copie o ID da planilha (da URL)
+                   - Exemplo: `https://docs.google.com/spreadsheets/d/[ID_AQUI]/edit`
+                4. Compartilhe a planilha com o email da service account
+                   - Email está no arquivo JSON: `client_email`
+                   - Dê permissão de **Editor**
+
+                ### Passo 4: Configurar no Streamlit
+
+                Adicione ao arquivo `.streamlit/secrets.toml`:
+
+                ```toml
+                # ID da planilha Google Sheets
+                google_sheets_id = "SEU_ID_AQUI"
+
+                # Credenciais da Service Account
+                [gcp_service_account]
+                type = "service_account"
+                project_id = "seu-projeto"
+                private_key_id = "abc123..."
+                private_key = "-----BEGIN PRIVATE KEY-----\\n..."
+                client_email = "streamlit-app@seu-projeto.iam.gserviceaccount.com"
+                client_id = "123..."
+                auth_uri = "https://accounts.google.com/o/oauth2/auth"
+                token_uri = "https://oauth2.googleapis.com/token"
+                auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+                client_x509_cert_url = "https://..."
+                ```
+
+                **Importante:** Copie TODO o conteúdo do arquivo JSON baixado para dentro de `[gcp_service_account]`
+
+                ### Passo 5: Testar
+
+                1. Volte para esta aba
+                2. Clique em **Testar Conexão**
+                3. Se sucesso, clique em **Sincronizar para Google Sheets**
+                4. Verifique na planilha se os dados foram enviados
+
+                ### Estrutura da Planilha
+
+                Serão criadas as seguintes abas automaticamente:
+                - **Pacientes** - Dados dos pacientes
+                - **Agendamentos** - Todos os agendamentos
+                - **Pacotes** - Pacotes de sessões
+                - **Historico** - Histórico de alterações
+                - **Info** - Metadados da sincronização
+                """)
+
+    # --- TAB 5: CONFIGURAÇÕES ---
+    with tab5:
         st.subheader("⚙️ Configurações do Sistema")
 
         # Status de Segurança (Caruru V18)
