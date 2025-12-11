@@ -1360,20 +1360,72 @@ if menu == "📊 Dashboard":
     
     # Próximos agendamentos
     st.subheader("📅 Próximos Agendamentos")
-    
+
     hoje = hoje_brasil()
     proximos = st.session_state.agendamentos[
         (st.session_state.agendamentos['Data'] >= hoje) &
         (st.session_state.agendamentos['Status'].isin(['🔵 Agendado', '🟢 Confirmado']))
     ].sort_values(['Data', 'Hora']).head(10)
-    
+
     if proximos.empty:
         st.info("Nenhum agendamento próximo.")
     else:
-        df_show = proximos[['Data', 'Hora', 'Paciente', 'Servico', 'Status']].copy()
-        df_show['Data'] = df_show['Data'].apply(lambda x: x.strftime('%d/%m/%Y'))
-        df_show['Hora'] = df_show['Hora'].apply(lambda x: x.strftime('%H:%M'))
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
+        for idx, agend in proximos.iterrows():
+            with st.expander(
+                f"{formatar_data_com_dia_semana(agend['Data'])} às {agend['Hora'].strftime('%H:%M')} - {agend['Paciente']} - {agend['Status']}"
+            ):
+                col1, col2, col3 = st.columns([2, 1, 1])
+
+                with col1:
+                    st.write(f"**Serviço:** {agend['Servico']}")
+                    st.write(f"**Duração:** {agend['Duracao']}")
+                    if agend['Observacoes']:
+                        st.write(f"**Obs:** {agend['Observacoes']}")
+
+                with col2:
+                    st.write(f"**Valor:** R$ {agend['ValorFinal']:.2f}")
+                    st.write(f"**Pagamento:** {agend['Pagamento']}")
+
+                with col3:
+                    st.write(f"**Status:** {agend['Status']}")
+
+                st.divider()
+
+                # Botões de ação rápida para alterar status
+                st.write("**⚡ Ações Rápidas:**")
+                col_status = st.columns(4)
+
+                with col_status[0]:
+                    if st.button("🟢 Confirmar", key=f"confirm_{idx}", use_container_width=True):
+                        st.session_state.agendamentos.at[idx, 'Status'] = '🟢 Confirmado'
+                        salvar_agendamentos(st.session_state.agendamentos)
+                        registrar_historico("ATUALIZAÇÃO", f"Status alterado para Confirmado: {agend['Paciente']} em {agend['Data'].strftime('%d/%m/%Y')}")
+                        st.success("✅ Status atualizado para Confirmado!")
+                        st.rerun()
+
+                with col_status[1]:
+                    if st.button("✅ Realizado", key=f"done_{idx}", use_container_width=True):
+                        st.session_state.agendamentos.at[idx, 'Status'] = '✅ Realizado'
+                        salvar_agendamentos(st.session_state.agendamentos)
+                        registrar_historico("ATUALIZAÇÃO", f"Status alterado para Realizado: {agend['Paciente']} em {agend['Data'].strftime('%d/%m/%Y')}")
+                        st.success("✅ Status atualizado para Realizado!")
+                        st.rerun()
+
+                with col_status[2]:
+                    if st.button("🔴 Cancelar", key=f"cancel_{idx}", use_container_width=True):
+                        st.session_state.agendamentos.at[idx, 'Status'] = '🔴 Cancelado'
+                        salvar_agendamentos(st.session_state.agendamentos)
+                        registrar_historico("ATUALIZAÇÃO", f"Status alterado para Cancelado: {agend['Paciente']} em {agend['Data'].strftime('%d/%m/%Y')}")
+                        st.warning("⚠️ Status atualizado para Cancelado!")
+                        st.rerun()
+
+                with col_status[3]:
+                    if st.button("⏳ Faltou", key=f"noshow_{idx}", use_container_width=True):
+                        st.session_state.agendamentos.at[idx, 'Status'] = '⏳ Faltou'
+                        salvar_agendamentos(st.session_state.agendamentos)
+                        registrar_historico("ATUALIZAÇÃO", f"Status alterado para Faltou: {agend['Paciente']} em {agend['Data'].strftime('%d/%m/%Y')}")
+                        st.info("ℹ️ Status atualizado para Faltou!")
+                        st.rerun()
     
     st.divider()
     
