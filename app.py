@@ -435,6 +435,7 @@ HORARIOS_DISPONIVEIS = [
 OPCOES_STATUS = ["🔵 Agendado", "🟢 Confirmado", "✅ Realizado", "🟡 Remarcado", "🔴 Cancelado", "⚫ Faltou"]
 OPCOES_PAGAMENTO = ["PAGO", "NÃO PAGO", "PACOTE", "GRATUITO", "INSTITUCIONAL"]
 OPCOES_DURACAO = ["1h", "2h"]
+OPCOES_TIPO_ATENDIMENTO = ["Regular", "Reposição"]
 VERSAO = "1.2"  # Atualizado com recursos de segurança
 
 # Configuração de Logging
@@ -762,6 +763,7 @@ def criar_proximo_agendamento_recorrente(agendamento_atual):
             "Pagamento": agendamento_atual['Pagamento'],
             "Status": "🔵 Agendado",
             "Recorrente": True,
+            "TipoAtendimento": "Regular",
             "Observacoes": agendamento_atual['Observacoes'],
             "Prontuario": ""
         }])
@@ -914,10 +916,13 @@ def carregar_agendamentos():
                 df['Duracao'] = '1h'
             if 'Recorrente' not in df.columns:
                 df['Recorrente'] = False
+            if 'TipoAtendimento' not in df.columns:
+                df['TipoAtendimento'] = 'Regular'
 
             # Preencher valores NaN em campos de texto
             df['Observacoes'] = df['Observacoes'].fillna('')
             df['Prontuario'] = df['Prontuario'].fillna('')
+            df['TipoAtendimento'] = df['TipoAtendimento'].fillna('Regular')
 
             # DESCRIPTOGRAFAR prontuários (dados clínicos sensíveis)
             if crypto_manager.enabled:
@@ -930,14 +935,14 @@ def carregar_agendamentos():
             return pd.DataFrame(columns=[
                 "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
                 "Valor", "Desconto", "ValorFinal", "Pagamento",
-                "Status", "Recorrente", "Observacoes", "Prontuario"
+                "Status", "Recorrente", "TipoAtendimento", "Observacoes", "Prontuario"
             ])
     except Exception as e:
         logger.error(f"Erro ao carregar agendamentos: {crypto_manager.sanitize_log(str(e))}")
         return pd.DataFrame(columns=[
             "ID", "Paciente", "Data", "Hora", "Duracao", "Servico",
             "Valor", "Desconto", "ValorFinal", "Pagamento",
-            "Status", "Recorrente", "Observacoes", "Prontuario"
+            "Status", "Recorrente", "TipoAtendimento", "Observacoes", "Prontuario"
         ])
 
 def salvar_agendamentos(df):
@@ -1355,9 +1360,153 @@ if menu == "📊 Dashboard":
             st.warning(msg)
     else:
         st.success("✅ Nenhum pacote próximo ao vencimento")
-    
+
     st.divider()
-    
+
+    # Pendências de Reposição
+    st.subheader("🔄 Pendências de Reposição")
+
+    # Buscar agendamentos cancelados ou faltou que são de PACOTE
+    pendencias_reposicao = st.session_state.agendamentos[
+        (st.session_state.agendamentos['Status'].isin(['🔴 Cancelado', '⚫ Faltou'])) &
+        (st.session_state.agendamentos['Pagamento'] == 'PACOTE') &
+        (st.session_state.agendamentos['TipoAtendimento'] == 'Regular')  # Apenas regulares, não reposições de reposições
+    ].sort_values(['Data', 'Hora'], ascending=False).head(5)
+
+    if pendencias_reposicao.empty:
+        st.success("✅ Nenhuma pendência de reposição")
+    else:
+        st.warning(f"⚠️ {len(pendencias_reposicao)} agendamento(s) de pacote que necessitam reposição")
+
+        for idx, pend in pendencias_reposicao.iterrows():
+            with st.expander(
+                f"{formatar_data_com_dia_semana(pend['Data'])} às {pend['Hora'].strftime('%H:%M')} - {pend['Paciente']} - {pend['Status']}"
+            ):
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    st.write(f"**Paciente:** {pend['Paciente']}")
+                    st.write(f"**Serviço:** {pend['Servico']}")
+                    st.write(f"**Status:** {pend['Status']}")
+                    if pend['Observacoes']:
+                        st.write(f"**Obs:** {pend['Observacoes']}")
+
+                with col2:
+                    # Botão para agendar reposição
+                    if st.button(f"📅 Agendar Reposição", key=f"repor_{idx}", use_container_width=True, type="primary"):
+                        st.session_state['reposicao_origem'] = idx
+                        st.session_state['reposicao_paciente'] = pend['Paciente']
+                        st.session_state['reposicao_servico'] = pend['Servico']
+                        st.session_state['reposicao_duracao'] = pend['Duracao']
+                        st.rerun()
+
+    # Formulário de agendamento de reposição (se ativado)
+    if 'reposicao_origem' in st.session_state and st.session_state['reposicao_origem'] is not None:
+        st.divider()
+        st.subheader("📅 Agendar Reposição")
+
+        ag_origem = st.session_state.agendamentos.loc[st.session_state['reposicao_origem']]
+
+        st.info(f"**Reposição para:** {st.session_state['reposicao_paciente']} - {st.session_state['reposicao_servico']}")
+        st.caption(f"Origem: {formatar_data_com_dia_semana(ag_origem['Data'])} às {ag_origem['Hora'].strftime('%H:%M')} - {ag_origem['Status']}")
+
+        with st.form("form_reposicao"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                data_reposicao = st.date_input(
+                    "📅 Data da Reposição *",
+                    value=hoje_brasil(),
+                    min_value=hoje_brasil(),
+                    max_value=hoje_brasil() + timedelta(days=365),
+                    format="DD/MM/YYYY"
+                )
+                st.caption(f"📆 {formatar_data_com_dia_semana(data_reposicao)}")
+
+            with col2:
+                hora_str_reposicao = st.selectbox(
+                    "⏰ Horário *",
+                    options=HORARIOS_DISPONIVEIS,
+                    index=7
+                )
+                hora_reposicao = hora_str_para_time(hora_str_reposicao)
+
+            obs_reposicao = st.text_area(
+                "📝 Observações",
+                placeholder="Ex: Reposição por cancelamento/falta..."
+            )
+
+            col_btn = st.columns([1, 1, 1])
+
+            with col_btn[0]:
+                if st.form_submit_button("✅ Confirmar Reposição", use_container_width=True, type="primary"):
+                    # Validar horário
+                    tem_conflito, ag_conflito = verificar_conflito_horario(data_reposicao, hora_reposicao, st.session_state['reposicao_duracao'])
+
+                    if tem_conflito:
+                        st.error(f"❌ Conflito de horário! Já existe agendamento de {ag_conflito['Paciente']} às {ag_conflito['Hora'].strftime('%H:%M')}")
+                    else:
+                        # Verificar se paciente ainda tem sessões no pacote
+                        info_pacote = calcular_sessoes_restantes(
+                            st.session_state['reposicao_paciente'],
+                            st.session_state.agendamentos,
+                            st.session_state.pacotes
+                        )
+
+                        if info_pacote and info_pacote['restantes'] > 0:
+                            # Criar agendamento de reposição
+                            novo_id = gerar_id_sequencial(st.session_state.agendamentos)
+                            novo_agendamento = pd.DataFrame([{
+                                "ID": novo_id,
+                                "Paciente": st.session_state['reposicao_paciente'],
+                                "Data": data_reposicao,
+                                "Hora": hora_reposicao,
+                                "Duracao": st.session_state['reposicao_duracao'],
+                                "Servico": st.session_state['reposicao_servico'],
+                                "Valor": ag_origem['Valor'],
+                                "Desconto": ag_origem['Desconto'],
+                                "ValorFinal": ag_origem['ValorFinal'],
+                                "Pagamento": "PACOTE",
+                                "Status": "🔵 Agendado",
+                                "Recorrente": False,
+                                "TipoAtendimento": "Reposição",
+                                "Observacoes": f"Reposição de ID {st.session_state['reposicao_origem']}. {obs_reposicao}",
+                                "Prontuario": ""
+                            }])
+
+                            st.session_state.agendamentos = pd.concat(
+                                [st.session_state.agendamentos, novo_agendamento],
+                                ignore_index=True
+                            )
+
+                            salvar_agendamentos(st.session_state.agendamentos)
+                            registrar_historico(
+                                "REPOSIÇÃO_CRIADA",
+                                f"ID {novo_id} - Reposição para {st.session_state['reposicao_paciente']} (origem: ID {st.session_state['reposicao_origem']})"
+                            )
+
+                            # Limpar estado
+                            del st.session_state['reposicao_origem']
+                            del st.session_state['reposicao_paciente']
+                            del st.session_state['reposicao_servico']
+                            del st.session_state['reposicao_duracao']
+
+                            st.success(f"✅ Reposição agendada! ID: {novo_id}")
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error("❌ Paciente não possui sessões disponíveis no pacote!")
+
+            with col_btn[2]:
+                if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                    del st.session_state['reposicao_origem']
+                    del st.session_state['reposicao_paciente']
+                    del st.session_state['reposicao_servico']
+                    del st.session_state['reposicao_duracao']
+                    st.rerun()
+
+    st.divider()
+
     # Próximos agendamentos
     st.subheader("📅 Próximos Agendamentos")
 
@@ -1405,10 +1554,33 @@ if menu == "📊 Dashboard":
 
                 with col_status[1]:
                     if st.button("✅ Realizado", key=f"done_{idx}", use_container_width=True):
+                        # Verificar se deve criar sessão recorrente
+                        criar_recorrente = agend.get('Recorrente', False)
+
                         st.session_state.agendamentos.at[idx, 'Status'] = '✅ Realizado'
                         salvar_agendamentos(st.session_state.agendamentos)
                         registrar_historico("ATUALIZAÇÃO", f"Status alterado para Realizado: {agend['Paciente']} em {agend['Data'].strftime('%d/%m/%Y')}")
-                        st.success("✅ Status atualizado para Realizado!")
+
+                        # Criar próximo agendamento se for recorrente
+                        if criar_recorrente:
+                            agendamento_atualizado = st.session_state.agendamentos.loc[idx]
+                            proximo = criar_proximo_agendamento_recorrente(agendamento_atualizado)
+
+                            if proximo is not None:
+                                st.session_state.agendamentos = pd.concat(
+                                    [st.session_state.agendamentos, proximo],
+                                    ignore_index=True
+                                )
+                                salvar_agendamentos(st.session_state.agendamentos)
+                                proxima_data = proximo.iloc[0]['Data']
+                                st.success("✅ Status atualizado para Realizado!")
+                                st.success(f"🔄 Próxima sessão criada para {formatar_data_com_dia_semana(proxima_data)} às {agend['Hora'].strftime('%H:%M')}")
+                            else:
+                                st.success("✅ Status atualizado para Realizado!")
+                                st.info("ℹ️ Próxima sessão não foi criada (pacote vencido ou sem sessões)")
+                        else:
+                            st.success("✅ Status atualizado para Realizado!")
+
                         st.rerun()
 
                 with col_status[2]:
@@ -1603,6 +1775,7 @@ elif menu == "📅 Agendamentos":
                                 "Pagamento": pagamento,
                                 "Status": status,
                                 "Recorrente": recorrente,
+                                "TipoAtendimento": "Regular",
                                 "Observacoes": observacoes,
                                 "Prontuario": ""
                             }])
@@ -1641,6 +1814,7 @@ elif menu == "📅 Agendamentos":
                                 "Pagamento": pagamento,
                                 "Status": status,
                                 "Recorrente": recorrente,
+                                "TipoAtendimento": "Regular",
                                 "Observacoes": observacoes,
                                 "Prontuario": ""
                             }])
