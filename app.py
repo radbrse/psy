@@ -3911,7 +3911,7 @@ elif menu == "🛠️ Manutenção":
                                 sheet_id = st.secrets["google_sheets_id"]
                                 spreadsheet = client.open_by_key(sheet_id)
                                 st.success(f"✅ Planilha acessada: **{spreadsheet.title}**")
-                                st.info(f"📊 Abas disponíveis: {', '.join([ws.title for ws.worksheet in spreadsheet.worksheets()])}")
+                                st.info(f"📊 Abas disponíveis: {', '.join([worksheet.title for worksheet in spreadsheet.worksheets()])}")
                             except Exception as e:
                                 st.error(f"❌ Erro ao acessar planilha: {str(e)}")
 
