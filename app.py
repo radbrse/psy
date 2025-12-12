@@ -1803,7 +1803,7 @@ with st.sidebar:
     
     menu = st.radio(
         "Menu Principal",
-        ["📊 Dashboard", "📅 Agendamentos", "👤 Pacientes", "📦 Pacotes", 
+        ["📊 Atendimentos do dia", "📅 Agendamentos", "👤 Pacientes", "📦 Pacotes",
          "📱 Lembretes", "📈 Relatórios", "🛠️ Manutenção"],
         label_visibility="collapsed"
     )
@@ -1815,8 +1815,8 @@ with st.sidebar:
 # ==============================================================================
 # DASHBOARD
 # ==============================================================================
-if menu == "📊 Dashboard":
-    st.title("📊 Dashboard")
+if menu == "📊 Atendimentos do dia":
+    st.title("📊 Atendimentos do dia")
     
     # Filtro de período
     col1, col2 = st.columns(2)
