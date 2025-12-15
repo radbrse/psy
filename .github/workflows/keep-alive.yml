@@ -1,0 +1,37 @@
+name: Keep Streamlit App Alive
+
+on:
+  # Executar automaticamente a cada 14 minutos
+  schedule:
+    - cron: '*/14 * * * *'
+
+  # Permitir execução manual via interface do GitHub
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Ping Streamlit App
+        env:
+          STREAMLIT_APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
+        run: |
+          python scripts/keep_alive.py
+
+      - name: Log execution
+        run: |
+          echo "✅ Keep-alive executado com sucesso em $(date)"
+          echo "🌐 URL: ${STREAMLIT_APP_URL:-'URL não configurada'}"
